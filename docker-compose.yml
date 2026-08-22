@@ -1,0 +1,235 @@
+# docker-compose.yml — verspaetet production stack.
+#
+# Services: postgres (crawler + temporal persistence), temporal (production
+# server with Postgres persistence), temporal-ui, temporal-admin-tools
+# (one-shot schema setup), temporal-create-namespace (one-shot), migrate
+# (one-shot crawler schema), browserless, fetch-worker, process-worker,
+# seeder (one-shot), api (crawler Web UI + JSON API).
+#
+# All services run on one machine. No distributed architecture.
+# UIs: http://<host>:8080 (crawler), http://<host>:8233 (Temporal UI).
+services:
+  # ── Postgres (shared: crawler DB + Temporal persistence) ──────────────
+  postgres:
+    image: postgres:${POSTGRESQL_VERSION}
+    environment:
+      POSTGRES_USER: bahnhof
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: bahnhof
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bahnhof"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    volumes:
+      - verspaetet_pg:/var/lib/postgresql/data
+
+  # ── Temporal schema setup (one-shot) ───────────────────────────────────
+  temporal-admin-tools:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=bahnhof
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - POSTGRES_SEEDS=postgres
+      - SQL_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["/bin/sh"]
+    command: /scripts/setup-postgres.sh
+    restart: "no"
+
+  # ── Temporal server (production, Postgres-backed) ──────────────────────
+  temporal:
+    image: temporalio/server:${TEMPORAL_VERSION}
+    depends_on:
+      temporal-admin-tools:
+        condition: service_completed_successfully
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=bahnhof
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - POSTGRES_SEEDS=postgres
+      - BIND_ON_IP=0.0.0.0
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 60
+
+  # ── Temporal namespace setup (one-shot) ───────────────────────────────
+  temporal-create-namespace:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - DEFAULT_NAMESPACE=default
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["/bin/sh"]
+    command: /scripts/create-namespace.sh
+    restart: "no"
+
+  # ── Temporal Web UI ────────────────────────────────────────────────────
+  temporal-ui:
+    image: temporalio/ui:${TEMPORAL_UI_VERSION}
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8080
+    ports:
+      - "8233:8080"
+
+  # ── Crawler DB migrations (one-shot) ──────────────────────────────────
+  migrate:
+    image: migrate/migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./db/migrations:/migrations
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command:
+      ["-path", "/migrations/", "-database",
+       "postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable", "up"]
+    restart: "no"
+
+  # ── Browserless (headless Chrome for rendering bahnhof.de) ─────────────
+  browserless:
+    image: browserless/chrome:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - MAX_CONCURRENT_SESSIONS=2
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── Go workers ─────────────────────────────────────────────────────────
+  fetch-worker:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM golang:alpine
+        WORKDIR /app
+        COPY . .
+        RUN go mod download
+        RUN go build -o /app/bin/fetch-worker ./cmd/fetch-worker
+        CMD ["/app/bin/fetch-worker"]
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - BROWSERLESS_HOST=browserless:3000
+      - ACTIVITY_CAP=2
+    depends_on:
+      temporal:
+        condition: service_healthy
+      browserless:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  process-worker:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM golang:alpine
+        WORKDIR /app
+        COPY . .
+        RUN go mod download
+        RUN go build -o /app/bin/process-worker ./cmd/process-worker
+        CMD ["/app/bin/process-worker"]
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - BROWSERLESS_HOST=browserless:3000
+      - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
+      - ACTIVITY_CAP=2
+    depends_on:
+      temporal:
+        condition: service_healthy
+      browserless:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Seeder (one-shot: starts Discovery + Monitor workflows) ───────────
+  seeder:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM golang:alpine
+        WORKDIR /app
+        COPY . .
+        RUN go mod download
+        RUN go build -o /app/bin/seeder ./cmd/seeder
+        CMD ["/app/bin/seeder"]
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
+    depends_on:
+      temporal:
+        condition: service_healthy
+      temporal-create-namespace:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      fetch-worker:
+        condition: service_started
+      process-worker:
+        condition: service_started
+    restart: "no"
+
+  # ── Crawler API + Web UI ──────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM node:alpine AS web
+        WORKDIR /web
+        COPY web/package.json web/package-lock.json ./
+        RUN npm ci
+        COPY web/ ./
+        RUN npm run build
+        FROM golang:alpine AS go
+        WORKDIR /app
+        COPY . .
+        COPY --from=web /web/dist ./web/dist
+        RUN go mod download
+        RUN go build -o /app/bin/api ./cmd/api
+        CMD ["/app/bin/api"]
+    environment:
+      - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
+      - API_PORT=8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  verspaetet_pg:

@@ -1,0 +1,13 @@
+docs/
+tickets/
+activities/testdata/
+.playwright-mcp/
+*.md
+.git/
+bin/
+*.exe
+web/node_modules/
+web/dist/
+.env
+scripts/
+VERSION
