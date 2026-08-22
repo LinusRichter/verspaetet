@@ -1,0 +1,26 @@
+# Secrets
+.env
+
+# Build artifacts
+*.exe
+bin/
+web/node_modules/
+web/dist/
+
+# Private / non-public
+AGENTS.md
+docs/
+scripts/
+tickets/
+VERSION
+
+# Playwright/browser logs
+.playwright-mcp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.bak

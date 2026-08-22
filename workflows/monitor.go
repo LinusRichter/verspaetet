@@ -1,0 +1,155 @@
+package workflows
+
+import (
+	"time"
+
+	"verspaetet/activities"
+	"verspaetet/shared"
+
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
+)
+
+// StationMonitor is the v1 monitor workflow: a long-running ~5-minute loop
+// that scrapes a station's departure and arrival boards, persists the
+// observed StopEvents, and ContinueAsNews forever. See
+// docs/architecture/workflow-station-monitor.md.
+//
+// Runs on monitor-queue. All activities it calls are registered there, so no
+// cross-queue TaskQueue option is needed for its own activity calls. Child
+// StationDiscovery starts are scheduled onto discovery-queue.
+func StationMonitor(ctx workflow.Context, stationSlug string) error {
+	logger := workflow.GetLogger(ctx)
+
+	cadenceOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    100 * time.Millisecond,
+			BackoffCoefficient: 2.0,
+			MaximumAttempts:    3,
+		},
+	}
+	fetchOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 60 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        5 * time.Second,
+			BackoffCoefficient:     2.0,
+			MaximumInterval:        2 * time.Minute,
+			MaximumAttempts:         4,
+			NonRetryableErrorTypes: []string{"ErrInvalidInput"},
+		},
+	}
+	parseOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 15 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    1 * time.Second,
+			BackoffCoefficient: 2.0,
+			MaximumAttempts:    3,
+		},
+	}
+	persistOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 15 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        200 * time.Millisecond,
+			BackoffCoefficient:     2.0,
+			MaximumAttempts:        5,
+			NonRetryableErrorTypes: []string{"ErrUnresolvedStation"},
+		},
+	}
+
+	var (
+		fetch   activities.Fetch
+		process activities.Process
+	)
+
+	// Cadence: read via activity (the workflow MUST NOT touch the DB).
+	cadenceCtx := workflow.WithActivityOptions(ctx, cadenceOpts)
+	var cadence shared.GetStationCadenceResult
+	if err := workflow.ExecuteActivity(cadenceCtx, process.GetStationCadence,
+		shared.GetStationCadenceInput{StationSlug: stationSlug}).Get(cadenceCtx, &cadence); err != nil {
+		logger.Warn("StationMonitor: GetStationCadence failed, using 5m default",
+			"slug", stationSlug, "err", err)
+		cadence.Cadence = 0
+	}
+	sleepFor := cadence.Cadence
+	if sleepFor == 0 {
+		sleepFor = 5 * time.Minute
+	}
+
+	cycleStart := workflow.Now(ctx)
+	resolvedEva := ""
+
+	for _, direction := range []string{"departure", "arrival"} {
+		eva, err := runMonitorDirection(ctx, stationSlug, direction, fetchOpts, parseOpts, persistOpts, &fetch, &process, resolvedEva)
+		if err != nil {
+			logger.Warn("StationMonitor: direction cycle failed, skipping",
+				"slug", stationSlug, "direction", direction, "err", err)
+			continue
+		}
+		if resolvedEva == "" {
+			resolvedEva = eva
+		}
+	}
+
+	// Sleep the remainder of the cadence interval, clamped to >= 0.
+	elapsed := workflow.Now(ctx).Sub(cycleStart)
+	remaining := sleepFor - elapsed
+	if remaining < 0 {
+		remaining = 0
+	}
+	if err := workflow.Sleep(ctx, remaining); err != nil {
+		logger.Warn("StationMonitor: sleep interrupted, continuing",
+			"slug", stationSlug, "err", err)
+	}
+
+	return workflow.NewContinueAsNewError(ctx, StationMonitor, stationSlug)
+}
+
+// runMonitorDirection runs fetch→parse→persist→discover for one direction.
+// Errors are returned to the caller, which logs and skips the direction.
+// resolvedEva is this station's EVA (reused across directions within a cycle);
+// it is passed to startDiscoveryChildren as the children's parentEva so
+// newly-discovered stations record this station as their discoverer.
+func runMonitorDirection(
+	ctx workflow.Context,
+	stationSlug, direction string,
+	fetchOpts, parseOpts, persistOpts workflow.ActivityOptions,
+	fetch *activities.Fetch,
+	process *activities.Process,
+	resolvedEva string,
+) (string, error) {
+	fetchCtx := workflow.WithActivityOptions(ctx, fetchOpts)
+	var fr shared.FetchStationBoardResult
+	if err := workflow.ExecuteActivity(fetchCtx, fetch.FetchStationBoard,
+		shared.FetchStationBoardInput{Slug: stationSlug, Direction: direction}).Get(fetchCtx, &fr); err != nil {
+		return "", err
+	}
+	if resolvedEva == "" {
+		resolvedEva = fr.ResolvedEva
+	}
+
+	parseCtx := workflow.WithActivityOptions(ctx, parseOpts)
+	var events []shared.StopEvent
+	if err := workflow.ExecuteActivity(parseCtx, process.ParseBoard,
+		shared.ParseBoardInput{
+			HTML:        fr.HTML,
+			Direction:   direction,
+			StationSlug: stationSlug,
+			StationEva:  resolvedEva,
+			StationName: fr.ResolvedName,
+			ParentEva:   "",
+			ScrapedAt:   fr.ScrapedAt,
+		}).Get(parseCtx, &events); err != nil {
+		return resolvedEva, err
+	}
+
+	persistCtx := workflow.WithActivityOptions(ctx, persistOpts)
+	var pr shared.PersistResult
+	if err := workflow.ExecuteActivity(persistCtx, process.PersistStopEvent, events).
+		Get(persistCtx, &pr); err != nil {
+		return resolvedEva, err
+	}
+
+	startDiscoveryChildren(ctx, stationSlug, pr.NewStations, resolvedEva, 0)
+	return resolvedEva, nil
+}
