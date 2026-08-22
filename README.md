@@ -13,6 +13,8 @@ verspaetet (German for "delayed") is a proof-of-concept that collects departure 
 3. **Monitor workflows** re-collect each station every 5 minutes in a ContinueAsNew loop, persisting delay data (planned vs. actual times, platform changes, cancellation status, delay reasons)
 4. A Go API serves the data as JSON + a React UI
 
+![Discovery flow](img/data_discovery_flow.png)
+
 ## Stack
 
 - **Go** — workers, activities, API server
@@ -32,39 +34,8 @@ UIs:
 - Monitor UI: `http://localhost:8080`
 - Temporal UI: `http://localhost:8233`
 
-## Test one station
+## Screenshots
 
-```bash
-docker compose run --rm seeder /app/bin/seeder --station=frankfurt-main-hbf --once
-```
+![Monitor UI](img/delay_ui.png)
 
-## Migrations
-
-```bash
-docker compose run --rm seeder /app/bin/seeder migrate up
-docker compose run --rm seeder /app/bin/seeder migrate down 1
-```
-
-## Build from source
-
-```bash
-go build ./...
-go vet ./...
-go test ./...
-```
-
-## Project layout
-
-```
-cmd/            Go entrypoints (api, fetch-worker, process-worker, seeder)
-activities/     Temporal activities (fetch, parse, persist)
-workflows/      Temporal workflows (discovery, monitor)
-shared/         Domain types and constants
-db/migrations/  Postgres schema migrations
-web/            React + Vite monitoring UI
-docker-compose.yml
-```
-
-## License
-
-MIT
+![Temporal UI](img/temporal_ui.png)
