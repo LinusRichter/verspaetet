@@ -7,6 +7,7 @@ import { RouteList } from './components/RouteList'
 import { TripView } from './components/TripView'
 import { TopDelays } from './components/TopDelays'
 import { Breadcrumb } from './components/Breadcrumb'
+import { HealthBadge } from './components/HealthBadge'
 
 function App() {
   const [slug, setSlug] = useState<string | null>(null)
@@ -24,6 +25,10 @@ function App() {
     <div className="app">
       <div className="top-bar">
         <StatsBar />
+        <div className="top-bar-right">
+          <HealthBadge />
+          <a href={`http://${window.location.hostname}:8233`} target="_blank" rel="noopener noreferrer" className="temporal-link">Temporal</a>
+        </div>
       </div>
       <div className="main-layout">
         <TopDelays />

@@ -79,6 +79,12 @@ type statsRow struct {
 	MaxDelayS  int `json:"max_delay_s"`
 }
 
+type healthRow struct {
+	RecentRuns    int `json:"recent_runs"`
+	RecentEvents  int `json:"recent_events"`
+	LastScrapeAgo int `json:"last_scrape_ago_s"`
+}
+
 func main() {
 	dsn := os.Getenv("POSTGRES_DSN")
 	if dsn == "" {
@@ -115,6 +121,9 @@ func main() {
 	})
 	mux.HandleFunc("GET /api/stats", func(w http.ResponseWriter, r *http.Request) {
 		handleStats(w, r, pool)
+	})
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		handleHealth(w, r, pool)
 	})
 
 	// Serve React static files if web/dist exists.
@@ -394,4 +403,19 @@ func handleStats(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 		return
 	}
 	writeJSON(w, s)
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
+	var h healthRow
+	err := pool.QueryRow(r.Context(), `
+		SELECT
+		  (SELECT count(*) FROM scrape_runs WHERE scraped_at > NOW() - INTERVAL '10 minutes'),
+		  (SELECT count(*) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '10 minutes'),
+		  COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT max(scraped_at) FROM stop_events)))::int, -1)`).Scan(
+		&h.RecentRuns, &h.RecentEvents, &h.LastScrapeAgo)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("query health: %v", err))
+		return
+	}
+	writeJSON(w, h)
 }

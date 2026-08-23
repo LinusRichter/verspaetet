@@ -1,4 +1,4 @@
-import type { Station, Line, StopEvent, Route, TopDelay, Stats, TripStop } from './types'
+import type { Station, Line, StopEvent, Route, TopDelay, Stats, Health, TripStop } from './types'
 
 // Relative base: the Go API serves both the static React files and the /api
 // endpoints on the same origin, so the browser resolves relative URLs against
@@ -29,6 +29,10 @@ export async function fetchTopDelays(limit: number = 20): Promise<TopDelay[]> {
 }
 export async function fetchStats(): Promise<Stats> {
   const r = await fetch(`${BASE}/api/stats`)
+  return r.json()
+}
+export async function fetchHealth(): Promise<Health> {
+  const r = await fetch(`${BASE}/api/health`)
   return r.json()
 }
 export async function fetchTripStops(uuid: string, date?: string): Promise<TripStop[]> {

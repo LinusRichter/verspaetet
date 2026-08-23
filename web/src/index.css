@@ -15,10 +15,18 @@ body { font-family: monospace; font-size: 13px; background: var(--bg); color: va
 .app { display: flex; flex-direction: column; height: 100vh; }
 
 /* top bar */
-.top-bar { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; }
+.top-bar { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; justify-content: space-between; }
 .stats-bar { display: flex; gap: 24px; padding: 10px 0; font-size: 13px; }
 .stats-bar b { color: var(--accent); }
 .stats-bar .delayed { color: var(--delay); }
+.top-bar-right { display: flex; align-items: center; gap: 14px; padding: 10px 0; }
+.temporal-link { color: var(--accent); text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 3px; }
+.temporal-link:hover { background: var(--bg3); }
+.health-badge { font-size: 11px; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--border); }
+.health-badge.ok { color: #4aff4a; border-color: #2a4a2a; }
+.health-badge.warn { color: #ff9a4a; border-color: #4a3a2a; }
+.health-badge.err { color: var(--delay); border-color: #4a2a2a; }
+.health-badge.loading { color: var(--muted); }
 
 /* layout */
 .main-layout { display: flex; flex: 1; overflow: hidden; }
