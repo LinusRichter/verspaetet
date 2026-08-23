@@ -43,31 +43,20 @@ type StopEvent struct {
 }
 
 // FetchStationBoardInput is the input to the FetchStationBoard activity.
-// See docs/architecture/activity-fetch-station-board.md.
 type FetchStationBoardInput struct {
 	Slug      string
 	Direction string
 }
 
-// FetchStationBoardResult is the output of FetchStationBoard.
+// FetchStationBoardResult is the output of FetchStationBoard. It returns
+// parsed StopEvents directly (no separate ParseBoard step needed) plus the
+// resolved station EVA and display name.
 type FetchStationBoardResult struct {
-	HTML         string
+	Events       []StopEvent
 	ScrapedAt    time.Time
 	URL          string
 	ResolvedEva  string
-	ResolvedName string // station display name parsed from the page <title>; empty if the title had no "– " separator
-}
-
-// ParseBoardInput is the input to the ParseBoard activity.
-// See docs/architecture/activity-parse-board.md.
-type ParseBoardInput struct {
-	HTML         string
-	Direction    string
-	StationSlug  string
-	StationEva   string
-	ParentEva    string
-	ScrapedAt    time.Time
-	StationName  string // resolved display name from FetchStationBoardResult.ResolvedName; used by PersistStopEvent for discovered stations
+	ResolvedName string
 }
 
 // PersistResult is the output of PersistStopEvent.

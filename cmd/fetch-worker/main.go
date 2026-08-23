@@ -23,14 +23,9 @@ func main() {
 	}
 	defer c.Close()
 
-	// Caps: FetchStationBoard concurrency is bounded so the single browserless
-	// instance is not overloaded (per docs/architecture/crawler-policy.md — 5
-	// per worker, ≤10 across both workers pointing at one browserless).
-	// Workflow-task execution is also capped so the discovery fan-out (each
-	// seed station can spawn hundreds of child StationDiscovery workflows)
-	// cannot overrun the worker's capacity or browserless in a single burst.
-	// Both caps are overridable via env (ACTIVITY_CAP / WORKFLOW_TASK_CAP) so a
-	// low-power host (Raspberry Pi) can throttle without a code change.
+	// Caps: FetchStationBoard concurrency is bounded by ACTIVITY_CAP.
+	// Workflow-task execution is also capped so the discovery fan-out
+	// cannot overrun the worker's capacity in a single burst.
 	activityCap := envInt("ACTIVITY_CAP", 5)
 	workflowTaskCap := envInt("WORKFLOW_TASK_CAP", 20)
 	w := worker.New(c, shared.DiscoveryQueue, worker.Options{

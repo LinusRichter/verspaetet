@@ -39,14 +39,6 @@ func StationMonitor(ctx workflow.Context, stationSlug string) error {
 			NonRetryableErrorTypes: []string{"ErrInvalidInput"},
 		},
 	}
-	parseOpts := workflow.ActivityOptions{
-		StartToCloseTimeout: 15 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    1 * time.Second,
-			BackoffCoefficient: 2.0,
-			MaximumAttempts:    3,
-		},
-	}
 	persistOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 15 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
@@ -80,7 +72,7 @@ func StationMonitor(ctx workflow.Context, stationSlug string) error {
 	resolvedEva := ""
 
 	for _, direction := range []string{"departure", "arrival"} {
-		eva, err := runMonitorDirection(ctx, stationSlug, direction, fetchOpts, parseOpts, persistOpts, &fetch, &process, resolvedEva)
+		eva, err := runMonitorDirection(ctx, stationSlug, direction, fetchOpts, persistOpts, &fetch, &process, resolvedEva)
 		if err != nil {
 			logger.Warn("StationMonitor: direction cycle failed, skipping",
 				"slug", stationSlug, "direction", direction, "err", err)
@@ -113,7 +105,7 @@ func StationMonitor(ctx workflow.Context, stationSlug string) error {
 func runMonitorDirection(
 	ctx workflow.Context,
 	stationSlug, direction string,
-	fetchOpts, parseOpts, persistOpts workflow.ActivityOptions,
+	fetchOpts, persistOpts workflow.ActivityOptions,
 	fetch *activities.Fetch,
 	process *activities.Process,
 	resolvedEva string,
@@ -128,24 +120,9 @@ func runMonitorDirection(
 		resolvedEva = fr.ResolvedEva
 	}
 
-	parseCtx := workflow.WithActivityOptions(ctx, parseOpts)
-	var events []shared.StopEvent
-	if err := workflow.ExecuteActivity(parseCtx, process.ParseBoard,
-		shared.ParseBoardInput{
-			HTML:        fr.HTML,
-			Direction:   direction,
-			StationSlug: stationSlug,
-			StationEva:  resolvedEva,
-			StationName: fr.ResolvedName,
-			ParentEva:   "",
-			ScrapedAt:   fr.ScrapedAt,
-		}).Get(parseCtx, &events); err != nil {
-		return resolvedEva, err
-	}
-
 	persistCtx := workflow.WithActivityOptions(ctx, persistOpts)
 	var pr shared.PersistResult
-	if err := workflow.ExecuteActivity(persistCtx, process.PersistStopEvent, events).
+	if err := workflow.ExecuteActivity(persistCtx, process.PersistStopEvent, fr.Events).
 		Get(persistCtx, &pr); err != nil {
 		return resolvedEva, err
 	}

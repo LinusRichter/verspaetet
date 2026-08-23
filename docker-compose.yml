@@ -1,15 +1,12 @@
 # docker-compose.yml — verspaetet production stack.
 #
-# Services: postgres (crawler + temporal persistence), temporal (production
-# server with Postgres persistence), temporal-ui, temporal-admin-tools
-# (one-shot schema setup), temporal-create-namespace (one-shot), migrate
-# (one-shot crawler schema), browserless, fetch-worker, process-worker,
-# seeder (one-shot), api (crawler Web UI + JSON API).
+# Services: postgres (data + temporal persistence), temporal (production
+# server, Postgres-backed), temporal-ui, temporal-admin-tools (one-shot
+# schema setup), temporal-create-namespace (one-shot), migrate (one-shot
+# schema), fetch-worker, process-worker, seeder (one-shot), api (Web UI + JSON).
 #
-# All services run on one machine. No distributed architecture.
-# UIs: http://<host>:8080 (crawler), http://<host>:8233 (Temporal UI).
+# No browserless — board data is fetched via direct HTTP POST to bahnhof.de.
 services:
-  # ── Postgres (shared: crawler DB + Temporal persistence) ──────────────
   postgres:
     image: postgres:${POSTGRESQL_VERSION}
     environment:
@@ -27,7 +24,6 @@ services:
     volumes:
       - verspaetet_pg:/var/lib/postgresql/data
 
-  # ── Temporal schema setup (one-shot) ───────────────────────────────────
   temporal-admin-tools:
     image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
     depends_on:
@@ -46,7 +42,6 @@ services:
     command: /scripts/setup-postgres.sh
     restart: "no"
 
-  # ── Temporal server (production, Postgres-backed) ──────────────────────
   temporal:
     image: temporalio/server:${TEMPORAL_VERSION}
     depends_on:
@@ -71,7 +66,6 @@ services:
       start_period: 30s
       retries: 60
 
-  # ── Temporal namespace setup (one-shot) ───────────────────────────────
   temporal-create-namespace:
     image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
     depends_on:
@@ -86,7 +80,6 @@ services:
     command: /scripts/create-namespace.sh
     restart: "no"
 
-  # ── Temporal Web UI ────────────────────────────────────────────────────
   temporal-ui:
     image: temporalio/ui:${TEMPORAL_UI_VERSION}
     depends_on:
@@ -98,7 +91,6 @@ services:
     ports:
       - "8233:8080"
 
-  # ── Crawler DB migrations (one-shot) ──────────────────────────────────
   migrate:
     image: migrate/migrate
     depends_on:
@@ -113,21 +105,6 @@ services:
        "postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable", "up"]
     restart: "no"
 
-  # ── Browserless (headless Chrome for rendering bahnhof.de) ─────────────
-  browserless:
-    image: browserless/chrome:latest
-    ports:
-      - "3000:3000"
-    environment:
-      - MAX_CONCURRENT_SESSIONS=2
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-
-  # ── Go workers ─────────────────────────────────────────────────────────
   fetch-worker:
     build:
       context: .
@@ -140,12 +117,10 @@ services:
         CMD ["/app/bin/fetch-worker"]
     environment:
       - TEMPORAL_HOST=temporal:7233
-      - BROWSERLESS_HOST=browserless:3000
-      - ACTIVITY_CAP=2
+      - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
+      - ACTIVITY_CAP=5
     depends_on:
       temporal:
-        condition: service_healthy
-      browserless:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -163,19 +138,15 @@ services:
         CMD ["/app/bin/process-worker"]
     environment:
       - TEMPORAL_HOST=temporal:7233
-      - BROWSERLESS_HOST=browserless:3000
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
-      - ACTIVITY_CAP=2
+      - ACTIVITY_CAP=5
     depends_on:
       temporal:
-        condition: service_healthy
-      browserless:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # ── Seeder (one-shot: starts Discovery + Monitor workflows) ───────────
   seeder:
     build:
       context: .
@@ -202,7 +173,6 @@ services:
         condition: service_started
     restart: "no"
 
-  # ── Crawler API + Web UI ──────────────────────────────────────────────
   api:
     build:
       context: .

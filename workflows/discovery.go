@@ -30,20 +30,18 @@ import (
 // while still bounding runaway growth.
 const maxDiscoveryDepth = 8
 
-// StationDiscovery is the v1 discovery workflow. It scrapes one station's
-// departure and arrival boards once, persists the observed StopEvents
-// (resolving/inserting the station's own EVA in the process), and starts
+// StationDiscovery is the v1 discovery workflow. It fetches one station's
+// departure and arrival boards, persists the observed StopEvents, and starts
 // child StationDiscovery workflows for any via/direction slugs not yet in the
-// stations table. See docs/architecture/workflow-station-discovery.md.
+// stations table.
 //
 // parentEva is the EVA of the station that discovered this slug (empty for
 // seeds); depth is this workflow's depth in the discovery graph (seeds are
 // 0, children are parentDepth+1). Children are only spawned when
 // depth < maxDiscoveryDepth.
 //
-// Runs on discovery-queue. ParseBoard and PersistStopEvent are scheduled onto
-// monitor-queue (cross-queue activity call) because the fetch-worker has no
-// Postgres pool.
+// Runs on discovery-queue. PersistStopEvent is scheduled onto monitor-queue
+// (cross-queue activity call) because the fetch-worker has no Postgres pool.
 func StationDiscovery(ctx workflow.Context, stationSlug string, parentEva string, depth int) error {
 	ctx = workflow.WithWorkflowRunTimeout(ctx, 10*time.Minute)
 
@@ -57,18 +55,9 @@ func StationDiscovery(ctx workflow.Context, stationSlug string, parentEva string
 			NonRetryableErrorTypes: []string{"ErrInvalidInput"},
 		},
 	}
-	parseOpts := workflow.ActivityOptions{
-		StartToCloseTimeout: 15 * time.Second,
-		TaskQueue:           shared.MonitorQueue, // cross-queue: run on process-worker
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    1 * time.Second,
-			BackoffCoefficient: 2.0,
-			MaximumAttempts:    3,
-		},
-	}
 	persistOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 15 * time.Second,
-		TaskQueue:           shared.MonitorQueue, // cross-queue: run on process-worker
+		TaskQueue:           shared.MonitorQueue,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        200 * time.Millisecond,
 			BackoffCoefficient:     2.0,
@@ -85,8 +74,8 @@ func StationDiscovery(ctx workflow.Context, stationSlug string, parentEva string
 		resolved string
 	)
 
-	resolved, depErr = runDiscoveryDirection(ctx, stationSlug, "departure", fetchOpts, parseOpts, persistOpts, &fetch, &process, "", parentEva, depth)
-	_, arrErr = runDiscoveryDirection(ctx, stationSlug, "arrival", fetchOpts, parseOpts, persistOpts, &fetch, &process, resolved, parentEva, depth)
+	resolved, depErr = runDiscoveryDirection(ctx, stationSlug, "departure", fetchOpts, persistOpts, &fetch, &process, "", parentEva, depth)
+	_, arrErr = runDiscoveryDirection(ctx, stationSlug, "arrival", fetchOpts, persistOpts, &fetch, &process, resolved, parentEva, depth)
 
 	if depErr != nil && arrErr != nil {
 		workflow.GetLogger(ctx).Error("StationDiscovery: both directions failed",
@@ -116,7 +105,7 @@ func StationDiscovery(ctx workflow.Context, stationSlug string, parentEva string
 func runDiscoveryDirection(
 	ctx workflow.Context,
 	stationSlug, direction string,
-	fetchOpts, parseOpts, persistOpts workflow.ActivityOptions,
+	fetchOpts, persistOpts workflow.ActivityOptions,
 	fetch *activities.Fetch,
 	process *activities.Process,
 	resolvedEva string,
@@ -133,24 +122,14 @@ func runDiscoveryDirection(
 		resolvedEva = fr.ResolvedEva
 	}
 
-	parseCtx := workflow.WithActivityOptions(ctx, parseOpts)
-	var events []shared.StopEvent
-	if err := workflow.ExecuteActivity(parseCtx, process.ParseBoard,
-		shared.ParseBoardInput{
-			HTML:        fr.HTML,
-			Direction:   direction,
-			StationSlug: stationSlug,
-			StationEva:  resolvedEva,
-			StationName: fr.ResolvedName,
-			ParentEva:   parentEva,
-			ScrapedAt:   fr.ScrapedAt,
-		}).Get(parseCtx, &events); err != nil {
-		return resolvedEva, err
+	// Stamp ParentEva on events (the fetch activity doesn't know it).
+	for i := range fr.Events {
+		fr.Events[i].ParentEva = parentEva
 	}
 
 	persistCtx := workflow.WithActivityOptions(ctx, persistOpts)
 	var pr shared.PersistResult
-	if err := workflow.ExecuteActivity(persistCtx, process.PersistStopEvent, events).
+	if err := workflow.ExecuteActivity(persistCtx, process.PersistStopEvent, fr.Events).
 		Get(persistCtx, &pr); err != nil {
 		return resolvedEva, err
 	}
