@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"math/rand"
 	"time"
 
 	"verspaetet/activities"
@@ -10,14 +11,13 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// StationMonitor is the v1 monitor workflow: a long-running ~5-minute loop
-// that scrapes a station's departure and arrival boards, persists the
-// observed StopEvents, and ContinueAsNews forever. See
-// docs/architecture/workflow-station-monitor.md.
+// StationMonitor is the monitor workflow: a long-running loop that fetches
+// a station's departure and arrival boards, persists the observed StopEvents,
+// and ContinueAsNews forever.
 //
-// Runs on monitor-queue. All activities it calls are registered there, so no
-// cross-queue TaskQueue option is needed for its own activity calls. Child
-// StationDiscovery starts are scheduled onto discovery-queue.
+// The default cadence is 30 minutes. On the first cycle, a random jitter
+// (0-30 min) is added so stations don't all fire at the same time.
+// Runs on monitor-queue.
 func StationMonitor(ctx workflow.Context, stationSlug string) error {
 	logger := workflow.GetLogger(ctx)
 
@@ -59,13 +59,23 @@ func StationMonitor(ctx workflow.Context, stationSlug string) error {
 	var cadence shared.GetStationCadenceResult
 	if err := workflow.ExecuteActivity(cadenceCtx, process.GetStationCadence,
 		shared.GetStationCadenceInput{StationSlug: stationSlug}).Get(cadenceCtx, &cadence); err != nil {
-		logger.Warn("StationMonitor: GetStationCadence failed, using 5m default",
+		logger.Warn("StationMonitor: GetStationCadence failed, using 30m default",
 			"slug", stationSlug, "err", err)
 		cadence.Cadence = 0
 	}
 	sleepFor := cadence.Cadence
 	if sleepFor == 0 {
-		sleepFor = 5 * time.Minute
+		sleepFor = 30 * time.Minute
+	}
+
+	// Stagger: on the first cycle, sleep a random fraction of the cadence
+	// so 5000 stations don't all fire at once. The jitter is deterministic
+	// per workflow run (seeded by slug) so it's stable across ContinueAsNew.
+	if workflow.GetInfo(ctx).Attempt == 1 {
+		jitter := time.Duration(rand.Int63n(int64(sleepFor)))
+		if err := workflow.Sleep(ctx, jitter); err != nil {
+			logger.Warn("StationMonitor: jitter sleep interrupted", "slug", stationSlug, "err", err)
+		}
 	}
 
 	cycleStart := workflow.Now(ctx)

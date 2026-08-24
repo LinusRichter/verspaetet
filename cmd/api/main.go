@@ -220,9 +220,10 @@ func handleEvents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, sl
 		       se.via_slugs, se.trip_uuid, se.trip_id, to_char(se.trip_date, 'YYYY-MM-DD') AS trip_date,
 		       st.name AS station_name, se.planned_time, se.actual_time,
 		       COALESCE(EXTRACT(EPOCH FROM (se.actual_time - se.planned_time)), 0)::int AS delay_s,
-		       se.platform, se.planned_platform, se.notes, se.scraped_at
+		       se.platform, se.planned_platform, nt.text AS notes, se.scraped_at
 		FROM stop_events se
 		JOIN stations st ON st.eva = se.station_eva
+		LEFT JOIN note_texts nt ON nt.id = se.notes_id
 		WHERE se.station_eva = (SELECT eva FROM stations WHERE slug = $1)
 		  AND se.line_label = $2
 		ORDER BY se.scraped_at DESC

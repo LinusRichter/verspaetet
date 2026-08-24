@@ -130,6 +130,24 @@ func (a *Process) PersistStopEvent(ctx context.Context, events []shared.StopEven
 		}
 	}
 
+	// Step 2c: resolve notes text → notes_id via the lookup table.
+	for i := range events {
+		if events[i].Notes == "" {
+			continue
+		}
+		var notesID int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO note_texts (text) VALUES ($1)
+		     ON CONFLICT (text) DO UPDATE SET text = EXCLUDED.text
+		     RETURNING id`,
+			events[i].Notes,
+		).Scan(&notesID)
+		if err != nil {
+			return shared.PersistResult{}, fmt.Errorf("notes upsert: %w", err)
+		}
+		events[i].NotesID = notesID
+	}
+
 	// Step 3: create the scrape_runs row (idempotent).
 	var scrapeRunID int64
 	direction := first.Direction
@@ -152,7 +170,7 @@ func (a *Process) PersistStopEvent(ctx context.Context, events []shared.StopEven
 	// Step 5: per-event upsert with the dedup rule.
 	upsertSQL := `
 WITH latest AS (
-  SELECT id, actual_time, platform, planned_platform, notes, direction_name
+  SELECT id, actual_time, platform, planned_platform, notes_id, direction_name
   FROM stop_events
   WHERE station_eva = $1
     AND direction   = $2
@@ -165,7 +183,7 @@ INSERT INTO stop_events (
   scrape_run_id, station_eva, direction, line_label, line_category,
   direction_name, direction_eva, planned_time, actual_time, platform,
   planned_platform, via_evas, via_slugs, trip_id, trip_date, trip_uuid,
-  notes, scraped_at, direction_slug, reason_code, cancelled
+  notes_id, scraped_at, direction_slug, reason_code, cancelled
 )
   SELECT $5, $1, $2, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $3, $4, $16, $17, $18, $19, $20, $21
   WHERE NOT EXISTS (
@@ -173,7 +191,7 @@ INSERT INTO stop_events (
     WHERE latest.actual_time      IS NOT DISTINCT FROM $11
       AND latest.platform         IS NOT DISTINCT FROM $12
       AND latest.planned_platform IS NOT DISTINCT FROM $13
-      AND latest.notes            IS NOT DISTINCT FROM $17
+      AND latest.notes_id         IS NOT DISTINCT FROM $17
       AND latest.direction_name   IS NOT DISTINCT FROM $8
   )`
 	for _, ev := range events {
@@ -216,11 +234,15 @@ INSERT INTO stop_events (
 		if ev.DirectionEva != "" {
 			directionEva = ev.DirectionEva
 		}
+		var notesID interface{}
+		if ev.NotesID != 0 {
+			notesID = ev.NotesID
+		}
 		_, err := tx.Exec(ctx, upsertSQL,
 			stationEva, ev.Direction, ev.TripID, tripDate,
 			scrapeRunID, ev.LineLabel, ev.LineCategory,
 			ev.DirectionName, directionEva, ev.PlannedTime, actualTime, platform,
-			plannedPlatform, viaEvas, viaSlugs, ev.TripUUID, ev.Notes, ev.ScrapedAt,
+			plannedPlatform, viaEvas, viaSlugs, ev.TripUUID, notesID, ev.ScrapedAt,
 			directionSlug, mapReason(ev.Notes), ev.Cancelled,
 		)
 		if err != nil {

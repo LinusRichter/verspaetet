@@ -171,7 +171,7 @@ func runFullSeed() {
 	c := dialTemporal(ctx)
 	defer c.Close()
 
-	slugs := loadSeedSlugs(ctx)
+	slugs := loadAllSlugs(ctx)
 	log.Printf("[seeder] Full seed: starting workflows for %d stations.\n", len(slugs))
 
 	for _, slug := range slugs {
@@ -200,21 +200,11 @@ func runFullSeed() {
 	log.Println("[seeder] Full seed dispatched; exiting.")
 }
 
-// loadSeedSlugs reads the seed station slugs from Postgres. The seeder uses
-// the same pool pattern as the process-worker. The seed migration
-// (db/migrations/0002_seed_stations.up.sql) inserts the 23 Fernverkehrsknoten
-// with category = 1; discovered stations are inserted by PersistStopEvent
-// with category = NULL. Selecting on category = 1 therefore reliably returns
-// exactly the seed stations regardless of how many stations discovery has
-// added. (category = 1 is the functional seed identifier; discovered_from is
-// now populated by PersistStopEvent for discovered stations, but seeds keep
-// discovered_from = NULL, so `WHERE discovered_from IS NULL` would also work
-// — category = 1 is preferred because it is the seed migration's explicit
-// marker and is robust to any future change in discovered_from semantics.)
-func loadSeedSlugs(ctx context.Context) []string {
+// loadAllSlugs reads all station slugs from Postgres (seeds + discovered).
+func loadAllSlugs(ctx context.Context) []string {
 	dsn := os.Getenv("POSTGRES_DSN")
 	if dsn == "" {
-		log.Fatalln("POSTGRES_DSN is not set; cannot read seed station list")
+		log.Fatalln("POSTGRES_DSN is not set; cannot read station list")
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -222,8 +212,7 @@ func loadSeedSlugs(ctx context.Context) []string {
 	}
 	defer pool.Close()
 
-	rows, err := pool.Query(ctx,
-		"SELECT slug FROM stations WHERE category = 1 ORDER BY name")
+	rows, err := pool.Query(ctx, "SELECT slug FROM stations ORDER BY name")
 	if err != nil {
 		log.Fatalln("Unable to query seed stations:", err)
 	}
@@ -241,7 +230,7 @@ func loadSeedSlugs(ctx context.Context) []string {
 		log.Fatalln("Iterating seed station rows:", err)
 	}
 	if len(slugs) == 0 {
-		log.Fatalln("No seed stations found (run `bahnhof seeder migrate up` first)")
+		log.Fatalln("No stations found (run `seeder migrate up` first)")
 	}
 	return slugs
 }

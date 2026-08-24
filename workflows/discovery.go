@@ -177,6 +177,15 @@ func startDiscoveryChildren(ctx workflow.Context, fromSlug string, slugs []strin
 				"parent_slug", fromSlug, "child_slug", slug, "err", err)
 			continue
 		}
+
+		// Also start a StationMonitor for this station (recurring 30-min loop).
+		// Dedup by workflow id: if already running, the start is a no-op.
+		monitorCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			WorkflowID:       "station-monitor-slug-" + slug,
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_ABANDON,
+			TaskQueue:         shared.MonitorQueue,
+		})
+		workflow.ExecuteChildWorkflow(monitorCtx, StationMonitor, slug)
 	}
 }
 

@@ -36,7 +36,8 @@ type StopEvent struct {
 	TripID          string
 	TripDate        *time.Time
 	TripUUID        string
-	Notes           string
+	Notes           string // raw notes text; resolved to notes_id by PersistStopEvent
+	NotesID         int64  // FK to note_texts.id; set by PersistStopEvent
 	ScrapedAt       time.Time
 	ParentEva       string
 	StationName     string // resolved display name; used by PersistStopEvent when inserting a discovered station
