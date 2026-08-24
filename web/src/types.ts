@@ -24,4 +24,4 @@ export interface Route {
 }
 export interface TopDelay { station_name: string; line_label: string; direction_name: string | null; planned_time: string; actual_time: string | null; delay_s: number; scraped_at: string; }
 export interface Stats { stations: number; stop_events: number; delayed: number; avg_delay_s: number; max_delay_s: number; }
-export interface Health { recent_runs: number; recent_events: number; last_scrape_ago_s: number; }
+export interface Health { recent_runs: number; recent_events: number; last_scrape_ago_s: number; expected_runs: number; fetch_rate: number; }
