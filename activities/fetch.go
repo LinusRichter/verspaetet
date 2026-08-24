@@ -53,23 +53,23 @@ type boardResponse struct {
 
 // boardEntry is one train on the board.
 type boardEntry struct {
-	ID             string      `json:"id"`
-	JourneyID      string      `json:"journeyID"`
-	LineName       string      `json:"lineName"`
-	Direction      string      `json:"direction"`
-	TimeSchedule   string      `json:"timeSchedule"`
-	TimeDelayed    string      `json:"timeDelayed"`
-	Delayed        bool        `json:"delayed"`
-	Platform       string      `json:"platform"`
-	PlatformSched  string      `json:"platformSchedule"`
-	Canceled       bool        `json:"canceled"`
-	Type           string      `json:"type"`
-	Kind           string      `json:"kind"`
-	ReplacementSvc string      `json:"replacementServiceType"`
-	StopPlace      stationRef  `json:"stopPlace"`
-	Destination    stationRef  `json:"destination"`
-	Origin         *stationRef `json:"origin"`
-	ViaStops       []stationRef `json:"viaStops"`
+	ID             string         `json:"id"`
+	JourneyID      string         `json:"journeyID"`
+	LineName       string         `json:"lineName"`
+	Direction      string         `json:"direction"`
+	TimeSchedule   string         `json:"timeSchedule"`
+	TimeDelayed    string         `json:"timeDelayed"`
+	Delayed        bool           `json:"delayed"`
+	Platform       string         `json:"platform"`
+	PlatformSched  string         `json:"platformSchedule"`
+	Canceled       bool           `json:"canceled"`
+	Type           string         `json:"type"`
+	Kind           string         `json:"kind"`
+	ReplacementSvc string         `json:"replacementServiceType"`
+	StopPlace      stationRef     `json:"stopPlace"`
+	Destination    json.RawMessage `json:"destination"`
+	Origin         json.RawMessage `json:"origin"`
+	ViaStops       []stationRef   `json:"viaStops"`
 	Messages       struct {
 		Common []struct {
 			Text string `json:"text"`
@@ -297,6 +297,22 @@ func parseRSCResponse(body []byte) ([]boardEntry, error) {
 	return nil, fmt.Errorf("no row starting with '1:' in RSC response")
 }
 
+// parseStationRef parses a json.RawMessage that may be a stationRef object
+// or a string like "$undefined". Returns nil if it's not a valid stationRef.
+func parseStationRef(raw json.RawMessage) *stationRef {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == `"$undefined"` || string(raw) == "\"\"" {
+		return nil
+	}
+	var ref stationRef
+	if err := json.Unmarshal(raw, &ref); err != nil {
+		return nil
+	}
+	if ref.EvaNumber == "" && ref.Name == "" {
+		return nil
+	}
+	return &ref
+}
+
 // mapEntryToStopEvent maps a JSON board entry to a StopEvent.
 func mapEntryToStopEvent(e boardEntry, stationSlug, stationEva, stationName, direction string, scrapedAt time.Time) shared.StopEvent {
 	ev := shared.StopEvent{
@@ -329,12 +345,16 @@ func mapEntryToStopEvent(e boardEntry, stationSlug, stationEva, stationName, dir
 
 	// Direction (destination for departures, origin for arrivals).
 	if direction == "departure" {
-		ev.DirectionName = e.Destination.Name
-		ev.DirectionSlug = e.Destination.Slug
+		if ref := parseStationRef(e.Destination); ref != nil {
+			ev.DirectionName = ref.Name
+			ev.DirectionSlug = ref.Slug
+			ev.DirectionEva = ref.EvaNumber
+		}
 	} else {
-		if e.Origin != nil {
-			ev.DirectionName = e.Origin.Name
-			ev.DirectionSlug = e.Origin.Slug
+		if ref := parseStationRef(e.Origin); ref != nil {
+			ev.DirectionName = ref.Name
+			ev.DirectionSlug = ref.Slug
+			ev.DirectionEva = ref.EvaNumber
 		}
 	}
 
@@ -354,7 +374,7 @@ func mapEntryToStopEvent(e boardEntry, stationSlug, stationEva, stationName, dir
 	if len(e.JourneyID) >= 36 {
 		ev.TripUUID = e.JourneyID[9:] // skip "YYYYMMDD-"
 		if td, err := time.Parse("20060102", e.JourneyID[:8]); err == nil {
-			ev.TripDate = td
+			ev.TripDate = &td
 		}
 	}
 

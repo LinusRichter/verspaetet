@@ -26,6 +26,7 @@ type StopEvent struct {
 	LineCategory    string
 	DirectionName   string
 	DirectionSlug   string
+	DirectionEva    string
 	PlannedTime     time.Time
 	ActualTime      *time.Time
 	Platform        string
@@ -33,7 +34,7 @@ type StopEvent struct {
 	ViaSlugs        []string
 	ViaEvas         []string
 	TripID          string
-	TripDate        time.Time
+	TripDate        *time.Time
 	TripUUID        string
 	Notes           string
 	ScrapedAt       time.Time

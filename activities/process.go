@@ -189,6 +189,10 @@ INSERT INTO stop_events (
 		if ev.ActualTime != nil {
 			actualTime = *ev.ActualTime
 		}
+		var tripDate interface{}
+		if ev.TripDate != nil {
+			tripDate = *ev.TripDate
+		}
 		viaEvas := ev.ViaEvas
 		if viaEvas == nil {
 			viaEvas = []string{}
@@ -208,10 +212,14 @@ INSERT INTO stop_events (
 		if ev.DirectionSlug != "" {
 			directionSlug = ev.DirectionSlug
 		}
+		var directionEva interface{}
+		if ev.DirectionEva != "" {
+			directionEva = ev.DirectionEva
+		}
 		_, err := tx.Exec(ctx, upsertSQL,
-			stationEva, ev.Direction, ev.TripID, ev.TripDate,
+			stationEva, ev.Direction, ev.TripID, tripDate,
 			scrapeRunID, ev.LineLabel, ev.LineCategory,
-			ev.DirectionName, nil, ev.PlannedTime, actualTime, platform,
+			ev.DirectionName, directionEva, ev.PlannedTime, actualTime, platform,
 			plannedPlatform, viaEvas, viaSlugs, ev.TripUUID, ev.Notes, ev.ScrapedAt,
 			directionSlug, mapReason(ev.Notes), ev.Cancelled,
 		)
@@ -293,18 +301,34 @@ func (a *Process) GetStationCadence(ctx context.Context, in shared.GetStationCad
 func mapReason(notes string) string {
 	n := strings.ToLower(notes)
 	switch {
-	case strings.Contains(n, "notarzteinsatz"):
+	case strings.Contains(n, "notarzteinsatz"), strings.Contains(n, "personenunfall"):
 		return "MEDICAL_EMERGENCY"
 	case strings.Contains(n, "polizeieinsatz"):
 		return "POLICE_ACTIVITY"
 	case strings.Contains(n, "streik"):
 		return "STRIKE"
+	case strings.Contains(n, "bauarbeiten"), strings.Contains(n, "baustelle"):
+		return "CONSTRUCTION"
+	case strings.Contains(n, "signalstörung"):
+		return "TECHNICAL_PROBLEM_SIGNAL"
+	case strings.Contains(n, "weichenstörung"):
+		return "TECHNICAL_PROBLEM_SWITCH"
+	case strings.Contains(n, "oberleitungsstörung"), strings.Contains(n, "oberleitung"):
+		return "TECHNICAL_PROBLEM_OVERHEAD"
 	case strings.Contains(n, "streckenstörung"), strings.Contains(n, "strecke") && strings.Contains(n, "beeinträchtigt"):
 		return "TECHNICAL_PROBLEM_RAILWAY_SECTION"
-	case strings.Contains(n, "technische störung am zug"):
+	case strings.Contains(n, "technische störung am zug"), strings.Contains(n, "fahrzeugstörung"):
 		return "TECHNICAL_PROBLEM_VEHICLE"
-	case strings.Contains(n, "technische störung"):
+	case strings.Contains(n, "technische störung"), strings.Contains(n, "betriebsstörung"):
 		return "TECHNICAL_PROBLEM_OTHER"
+	case strings.Contains(n, "verspätung eines vorausfahrenden"),
+		strings.Contains(n, "verspätung eines vorherigen"),
+		strings.Contains(n, "verspätung aus vorheriger"):
+		return "PREVIOUS_TRAIN_DELAY"
+	case strings.Contains(n, "verzögerung im betriebsablauf"), strings.Contains(n, "betriebsablauf"):
+		return "OPERATIONAL_DELAY"
+	case strings.Contains(n, "tier auf der strecke"), strings.Contains(n, "tierauf"):
+		return "ANIMAL_ON_TRACK"
 	case strings.Contains(n, "hitze"):
 		return "WEATHER_HEAT"
 	case strings.Contains(n, "unwetter"):
@@ -314,12 +338,4 @@ func mapReason(notes string) string {
 	default:
 		return ""
 	}
-}
-
-// isCancelled reports whether the notes indicate a cancelled train.
-func isCancelled(notes string) bool {
-	n := strings.ToLower(notes)
-	return strings.Contains(n, "fällt heute aus") ||
-		strings.Contains(n, "entfällt") ||
-		strings.Contains(n, "ausfall")
 }

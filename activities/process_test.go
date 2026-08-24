@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -68,6 +69,11 @@ func TestParseRSCResponse(t *testing.T) {
 }
 
 func TestMapEntryToStopEvent(t *testing.T) {
+	destJSON, _ := json.Marshal(stationRef{
+		EvaNumber: "8004645",
+		Name:      "Offenbach(Main)Ost",
+		Slug:      "offenbach-main-ost",
+	})
 	entry := boardEntry{
 		LineName:      "S\u202f8",
 		TimeSchedule:  "2026-08-23T12:44:00+02:00",
@@ -80,11 +86,7 @@ func TestMapEntryToStopEvent(t *testing.T) {
 		JourneyID:     "20260823-62f5a1c3-6d5f-3a04-aa1b-d668f6fa5e81",
 		Type:          "CITY_TRAIN",
 		Kind:          "default",
-		Destination: stationRef{
-			EvaNumber: "8004645",
-			Name:      "Offenbach(Main)Ost",
-			Slug:      "offenbach-main-ost",
-		},
+		Destination:   destJSON,
 		ViaStops: []stationRef{
 			{EvaNumber: "8006691", Name: "Frankfurt(M)Taunusanlage", Slug: "frankfurt-main-taunusanlage"},
 		},
@@ -105,6 +107,9 @@ func TestMapEntryToStopEvent(t *testing.T) {
 	if ev.DirectionSlug != "offenbach-main-ost" {
 		t.Errorf("DirectionSlug = %q, want offenbach-main-ost", ev.DirectionSlug)
 	}
+	if ev.DirectionEva != "8004645" {
+		t.Errorf("DirectionEva = %q, want 8004645", ev.DirectionEva)
+	}
 	if ev.Platform != "102" {
 		t.Errorf("Platform = %q, want 102", ev.Platform)
 	}
@@ -116,6 +121,12 @@ func TestMapEntryToStopEvent(t *testing.T) {
 	}
 	if ev.TripUUID != "62f5a1c3-6d5f-3a04-aa1b-d668f6fa5e81" {
 		t.Errorf("TripUUID = %q, want 62f5a1c3-6d5f-3a04-aa1b-d668f6fa5e81", ev.TripUUID)
+	}
+	if ev.TripDate == nil {
+		t.Fatal("TripDate is nil")
+	}
+	if !ev.TripDate.Equal(time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("TripDate = %v, want 2026-08-23", *ev.TripDate)
 	}
 	if !ev.PlannedTime.Equal(time.Date(2026, 8, 23, 10, 44, 0, 0, time.UTC)) {
 		t.Errorf("PlannedTime = %v, want 2026-08-23T10:44:00Z", ev.PlannedTime)
@@ -147,22 +158,24 @@ func TestMapEntryToStopEvent(t *testing.T) {
 }
 
 func TestMapEntryToStopEvent_Arrival(t *testing.T) {
+	originJSON, _ := json.Marshal(stationRef{
+		EvaNumber: "8000255",
+		Name:      "Munich Hbf",
+		Slug:      "muenchen-hbf",
+	})
+	destJSON, _ := json.Marshal(stationRef{
+		EvaNumber: "8000105",
+		Name:      "Frankfurt Hbf",
+		Slug:      "frankfurt-main-hbf",
+	})
 	entry := boardEntry{
 		LineName:     "ICE",
 		TimeSchedule: "2026-08-23T14:00:00+02:00",
 		Canceled:     false,
 		Type:         "HIGH_SPEED_TRAIN",
 		Kind:         "default",
-		Origin: &stationRef{
-			EvaNumber: "8000255",
-			Name:      "Munich Hbf",
-			Slug:      "muenchen-hbf",
-		},
-		Destination: stationRef{
-			EvaNumber: "8000105",
-			Name:      "Frankfurt Hbf",
-			Slug:      "frankfurt-main-hbf",
-		},
+		Origin:       originJSON,
+		Destination:  destJSON,
 	}
 
 	ev := mapEntryToStopEvent(entry, "frankfurt-main-hbf", "8000105", "Frankfurt Hbf", "arrival", time.Now().UTC())
@@ -176,17 +189,18 @@ func TestMapEntryToStopEvent_Arrival(t *testing.T) {
 }
 
 func TestMapEntryToStopEvent_Ersatzbus(t *testing.T) {
+	destJSON, _ := json.Marshal(stationRef{
+		EvaNumber: "8000300",
+		Name:      "Passau Hbf",
+		Slug:      "passau-hbf",
+	})
 	entry := boardEntry{
 		LineName:       "RE50",
 		Type:           "REGIONAL_TRAIN",
 		Kind:           "replacement-service",
 		ReplacementSvc: "BUS",
 		Platform:       "",
-		Destination: stationRef{
-			EvaNumber: "8000300",
-			Name:      "Passau Hbf",
-			Slug:      "passau-hbf",
-		},
+		Destination:    destJSON,
 	}
 
 	ev := mapEntryToStopEvent(entry, "plattling", "8000301", "Plattling", "departure", time.Now().UTC())
@@ -200,15 +214,16 @@ func TestMapEntryToStopEvent_Ersatzbus(t *testing.T) {
 }
 
 func TestMapEntryToStopEvent_Messages(t *testing.T) {
+	destJSON, _ := json.Marshal(stationRef{
+		EvaNumber: "8000291",
+		Name:      "Stuttgart Hbf",
+		Slug:      "stuttgart-hbf",
+	})
 	entry := boardEntry{
-		LineName: "ICE 577",
-		Type:     "HIGH_SPEED_TRAIN",
-		Kind:     "default",
-		Destination: stationRef{
-			EvaNumber: "8000291",
-			Name:      "Stuttgart Hbf",
-			Slug:      "stuttgart-hbf",
-		},
+		LineName:    "ICE 577",
+		Type:        "HIGH_SPEED_TRAIN",
+		Kind:        "default",
+		Destination: destJSON,
 		Messages: struct {
 			Common []struct {
 				Text string `json:"text"`
@@ -249,10 +264,21 @@ func TestMapReason(t *testing.T) {
 		want  string
 	}{
 		{"Notarzteinsatz auf der Strecke", "MEDICAL_EMERGENCY"},
+		{"Personenunfall an der Strecke", "MEDICAL_EMERGENCY"},
 		{"Polizeieinsatz", "POLICE_ACTIVITY"},
 		{"Streik der GDL", "STRIKE"},
+		{"Wegen Bauarbeiten kommt es zu Verspätungen", "CONSTRUCTION"},
+		{"Signalstörung zwischen Augsburg und München", "TECHNICAL_PROBLEM_SIGNAL"},
+		{"Weichenstörung im Bahnhof", "TECHNICAL_PROBLEM_SWITCH"},
+		{"Oberleitungsstörung", "TECHNICAL_PROBLEM_OVERHEAD"},
 		{"Technische Störung am Zug", "TECHNICAL_PROBLEM_VEHICLE"},
+		{"Fahrzeugstörung am ICE", "TECHNICAL_PROBLEM_VEHICLE"},
 		{"Technische Störung", "TECHNICAL_PROBLEM_OTHER"},
+		{"Betriebsstörung im Streckennetz", "TECHNICAL_PROBLEM_OTHER"},
+		{"Verspätung eines vorausfahrenden Zuges", "PREVIOUS_TRAIN_DELAY"},
+		{"Verspätung aus vorheriger Fahrt", "PREVIOUS_TRAIN_DELAY"},
+		{"Verzögerung im Betriebsablauf", "OPERATIONAL_DELAY"},
+		{"Tier auf der Strecke", "ANIMAL_ON_TRACK"},
 		{"Hitzebedingte Einschränkungen", "WEATHER_HEAT"},
 		{"Unwetterwarnung", "WEATHER_STORM"},
 		{"Winterwitterung", "WEATHER_WINTER"},
@@ -262,25 +288,6 @@ func TestMapReason(t *testing.T) {
 		got := mapReason(tt.notes)
 		if got != tt.want {
 			t.Errorf("mapReason(%q) = %q, want %q", tt.notes, got, tt.want)
-		}
-	}
-}
-
-func TestIsCancelled(t *testing.T) {
-	tests := []struct {
-		notes string
-		want  bool
-	}{
-		{"Zug fällt heute aus", true},
-		{"Zug entfällt", true},
-		{"Zugausfall zwischen München und Augsburg", true},
-		{"Verspätung aus vorheriger Fahrt", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		got := isCancelled(tt.notes)
-		if got != tt.want {
-			t.Errorf("isCancelled(%q) = %v, want %v", tt.notes, got, tt.want)
 		}
 	}
 }
