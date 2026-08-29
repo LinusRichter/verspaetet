@@ -2,20 +2,8 @@ package shared
 
 import "time"
 
-// Task queues.
-const (
-	DiscoveryQueue = "discovery-queue"
-	MonitorQueue   = "monitor-queue"
-)
-
-// Workflow names (registered on workers, used as the workflow type by clients).
-const (
-	StationDiscoveryWorkflowName = "StationDiscovery"
-	StationMonitorWorkflowName   = "StationMonitor"
-)
-
 // StopEvent is one row of a station board as observed at a single scrape —
-// the central persisted entity. See docs/domain/stop-event.md.
+// the central persisted entity.
 type StopEvent struct {
 	ID              int64
 	ScrapeRunID     int64

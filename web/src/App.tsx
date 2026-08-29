@@ -27,7 +27,7 @@ function App() {
         <StatsBar />
         <div className="top-bar-right">
           <HealthBadge />
-          <a href={`http://${window.location.hostname}:8233`} target="_blank" rel="noopener noreferrer" className="temporal-link">Temporal</a>
+          <a href={`http://${window.location.hostname}:8081`} target="_blank" rel="noopener noreferrer" className="temporal-link">asynqmon</a>
         </div>
       </div>
       <div className="main-layout">

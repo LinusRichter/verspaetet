@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.temporal.io/sdk/activity"
 )
 
 // Process holds the processing activities: PersistStopEvent, GetStationCadence.
@@ -197,11 +197,8 @@ INSERT INTO stop_events (
   ON CONFLICT (station_eva, direction, trip_id, trip_date, scraped_at) DO NOTHING`
 	for _, ev := range events {
 		if ev.LineLabel == "" {
-			activity.GetLogger(ctx).Warn("PersistStopEvent: skipping event with empty LineLabel",
-				"direction", ev.Direction,
-				"direction_name", ev.DirectionName,
-				"planned_time", ev.PlannedTime,
-				"trip_id", ev.TripID)
+			log.Printf("WARN PersistStopEvent: skipping event with empty LineLabel (direction=%s direction_name=%q planned_time=%s trip_id=%q)",
+				ev.Direction, ev.DirectionName, ev.PlannedTime.Format(time.RFC3339), ev.TripID)
 			continue
 		}
 		var actualTime interface{}
