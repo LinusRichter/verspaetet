@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -135,7 +135,7 @@ func runOneStation(slug string, once bool) {
 			ID:        fmt.Sprintf("station-monitor-slug-%s", slug),
 			TaskQueue: shared.MonitorQueue,
 		}
-		monWe, err := c.ExecuteWorkflow(ctx, monOpts, shared.StationMonitorWorkflowName, slug)
+		monWe, err := c.ExecuteWorkflow(ctx, monOpts, shared.StationMonitorWorkflowName, slug, true)
 		if err != nil {
 			log.Fatalf("Unable to start StationMonitor for %q: %v\n", slug, err)
 		}
@@ -152,7 +152,7 @@ func runOneStation(slug string, once bool) {
 		WorkflowRunTimeout:  30 * time.Second,
 		WorkflowTaskTimeout: 10 * time.Second,
 	}
-	monWe, err := c.ExecuteWorkflow(ctx, monOpts, shared.StationMonitorWorkflowName, slug)
+	monWe, err := c.ExecuteWorkflow(ctx, monOpts, shared.StationMonitorWorkflowName, slug, true)
 	if err != nil {
 		log.Fatalf("Unable to start StationMonitor (once) for %q: %v\n", slug, err)
 	}
@@ -190,7 +190,7 @@ func runFullSeed() {
 			ID:        fmt.Sprintf("station-monitor-slug-%s", slug),
 			TaskQueue: shared.MonitorQueue,
 		}
-		monWe, err := c.ExecuteWorkflow(ctx, monOpts, shared.StationMonitorWorkflowName, slug)
+		monWe, err := c.ExecuteWorkflow(ctx, monOpts, shared.StationMonitorWorkflowName, slug, true)
 		if err != nil {
 			log.Printf("[seeder] WARN: StationMonitor start failed for %q: %v\n", slug, err)
 		} else {

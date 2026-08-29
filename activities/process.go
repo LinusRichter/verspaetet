@@ -193,7 +193,8 @@ INSERT INTO stop_events (
       AND latest.planned_platform IS NOT DISTINCT FROM $13
       AND latest.notes_id         IS NOT DISTINCT FROM $17
       AND latest.direction_name   IS NOT DISTINCT FROM $8
-  )`
+  )
+  ON CONFLICT (station_eva, direction, trip_id, trip_date, scraped_at) DO NOTHING`
 	for _, ev := range events {
 		if ev.LineLabel == "" {
 			activity.GetLogger(ctx).Warn("PersistStopEvent: skipping event with empty LineLabel",

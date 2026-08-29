@@ -1,7 +1,7 @@
 package workflows
 
 import (
-	"math/rand"
+	"hash/fnv"
 	"time"
 
 	"verspaetet/activities"
@@ -15,10 +15,13 @@ import (
 // a station's departure and arrival boards, persists the observed StopEvents,
 // and ContinueAsNews forever.
 //
-// The default cadence is 30 minutes. On the first cycle, a random jitter
-// (0-30 min) is added so stations don't all fire at the same time.
-// Runs on monitor-queue.
-func StationMonitor(ctx workflow.Context, stationSlug string) error {
+// firstCycle is true only on the very first run of a workflow execution; the
+// ContinueAsNew call passes false so the jitter fires exactly once per
+// station, not on every cycle (Attempt resets to 1 on ContinueAsNew).
+//
+// The jitter is derived deterministically from a hash of the slug — no
+// math/rand (which would break Temporal replay determinism).
+func StationMonitor(ctx workflow.Context, stationSlug string, firstCycle bool) error {
 	logger := workflow.GetLogger(ctx)
 
 	cadenceOpts := workflow.ActivityOptions{
@@ -68,13 +71,15 @@ func StationMonitor(ctx workflow.Context, stationSlug string) error {
 		sleepFor = 30 * time.Minute
 	}
 
-	// Stagger: on the first cycle, sleep a random fraction of the cadence
-	// so 5000 stations don't all fire at once. The jitter is deterministic
-	// per workflow run (seeded by slug) so it's stable across ContinueAsNew.
-	if workflow.GetInfo(ctx).Attempt == 1 {
-		jitter := time.Duration(rand.Int63n(int64(sleepFor)))
-		if err := workflow.Sleep(ctx, jitter); err != nil {
-			logger.Warn("StationMonitor: jitter sleep interrupted", "slug", stationSlug, "err", err)
+	// Stagger: on the first cycle only, sleep a deterministic pseudo-random
+	// fraction of the cadence (hash of the slug) so stations don't all fire
+	// at once. Deterministic = safe for Temporal replay.
+	if firstCycle {
+		jitter := time.Duration(hashToJitter(stationSlug) % int64(sleepFor))
+		if jitter > 0 {
+			if err := workflow.Sleep(ctx, jitter); err != nil {
+				logger.Warn("StationMonitor: jitter sleep interrupted", "slug", stationSlug, "err", err)
+			}
 		}
 	}
 
@@ -104,7 +109,16 @@ func StationMonitor(ctx workflow.Context, stationSlug string) error {
 			"slug", stationSlug, "err", err)
 	}
 
-	return workflow.NewContinueAsNewError(ctx, StationMonitor, stationSlug)
+	return workflow.NewContinueAsNewError(ctx, StationMonitor, stationSlug, false)
+}
+
+// hashToJitter deterministically maps a slug to a pseudo-random int64.
+// FNV-1a is fast and stable across runs/platforms — same slug always
+// produces the same jitter, which keeps Temporal replays deterministic.
+func hashToJitter(slug string) int64 {
+	h := fnv.New64a()
+	h.Write([]byte(slug))
+	return int64(h.Sum64())
 }
 
 // runMonitorDirection runs fetch→parse→persist→discover for one direction.

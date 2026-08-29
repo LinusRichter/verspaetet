@@ -9,12 +9,19 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"verspaetet/shared"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// evaCache caches slug → (eva, name) lookups. The fetch-worker executes
+// many activities concurrently; resolving the same station's EVA on every
+// fetch would re-create a pgxpool per call. Stations never change their
+// EVA, so the cache never expires.
+var evaCache sync.Map // map[string]stationRef
 
 // Fetch holds the fetch activities. The only one is FetchStationBoard.
 type Fetch struct{}
@@ -185,35 +192,48 @@ func (a *Fetch) FetchStationBoard(ctx context.Context, in shared.FetchStationBoa
 }
 
 // resolveStationEva resolves a station slug to its EVA number and display name.
-// It first tries the DB (if POSTGRES_DSN is set), then falls back to fetching
-// the station's hub page and parsing the <meta name="bf:evaNumbers"> tag.
+// Results are cached in-memory (stations never change their EVA). On a cache
+// miss it tries the DB (if POSTGRES_DSN is set) with a single shared pool,
+// then falls back to fetching the station's hub page meta tags.
 func resolveStationEva(ctx context.Context, slug string) (eva, name string, err error) {
-	// Try the DB first.
-	dsn := os.Getenv("POSTGRES_DSN")
-	if dsn != "" {
-		eva, name, err = lookupStationInDB(ctx, slug, dsn)
+	// Cache hit?
+	if v, ok := evaCache.Load(slug); ok {
+		ref := v.(stationRef)
+		return ref.EvaNumber, ref.Name, nil
+	}
+
+	// Try the DB first (single shared pool, initialized once).
+	if pool := dbPool(); pool != nil {
+		err = pool.QueryRow(ctx,
+			"SELECT eva, name FROM stations WHERE slug = $1", slug,
+		).Scan(&eva, &name)
 		if err == nil {
+			evaCache.Store(slug, stationRef{EvaNumber: eva, Name: name})
 			return eva, name, nil
 		}
 	}
 
 	// Fall back to fetching the hub page meta tags.
-	return lookupStationViaHubPage(ctx, slug)
-}
-
-// lookupStationInDB queries the stations table for the EVA and name.
-func lookupStationInDB(ctx context.Context, slug, dsn string) (eva, name string, err error) {
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return "", "", err
+	eva, name, err = lookupStationViaHubPage(ctx, slug)
+	if err == nil {
+		evaCache.Store(slug, stationRef{EvaNumber: eva, Name: name})
 	}
-	defer pool.Close()
-
-	err = pool.QueryRow(ctx,
-		"SELECT eva, name FROM stations WHERE slug = $1", slug,
-	).Scan(&eva, &name)
 	return eva, name, err
 }
+
+// dbPool lazily initializes the shared pgxpool for EVA lookups (once per
+// process). Returns nil if the DSN is unset or the pool can't be created.
+var dbPool = sync.OnceValue(func() *pgxpool.Pool {
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		return nil
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return nil
+	}
+	return pool
+})
 
 // lookupStationViaHubPage fetches the station's hub page (GET, no browser)
 // and extracts the EVA from <meta name="bf:evaNumbers"> and the name from

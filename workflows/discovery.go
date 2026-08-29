@@ -185,7 +185,7 @@ func startDiscoveryChildren(ctx workflow.Context, fromSlug string, slugs []strin
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_ABANDON,
 			TaskQueue:         shared.MonitorQueue,
 		})
-		workflow.ExecuteChildWorkflow(monitorCtx, StationMonitor, slug)
+		workflow.ExecuteChildWorkflow(monitorCtx, StationMonitor, slug, true)
 	}
 }
 
