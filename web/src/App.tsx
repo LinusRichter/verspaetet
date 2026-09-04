@@ -1,4 +1,4 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import { StatsBar } from './components/StatsBar'
 import { StationList } from './components/StationList'
 import { LineList } from './components/LineList'
@@ -27,7 +27,7 @@ function App() {
         <StatsBar />
         <div className="top-bar-right">
           <HealthBadge />
-          <a href={`http://${window.location.hostname}:8081`} target="_blank" rel="noopener noreferrer" className="temporal-link">asynqmon</a>
+          <a href={`http://${window.location.hostname}:8081`} target="_blank" rel="noopener noreferrer" className="ui-link">asynqmon</a>
         </div>
       </div>
       <div className="main-layout">
