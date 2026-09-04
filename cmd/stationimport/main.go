@@ -189,9 +189,20 @@ ON CONFLICT (eva) DO UPDATE SET
 	return nil
 }
 
-// resolvePending deletes pending_stations rows whose name now exists in
-// stations (discovery resolved by a fresh import) and reports the remainder.
+// resolvePending resolves pending_stations rows whose name now exists in
+// stations (discovery resolved by a fresh import): provenance (seen_from) is
+// copied into stations.discovered_from when that field is still NULL, then
+// the pending row is deleted. The remainder stays pending for the next import.
 func resolvePending(ctx context.Context, pool *pgxpool.Pool) error {
+	// Copy provenance into unresolved stations rows.
+	_, err := pool.Exec(ctx,
+		`UPDATE stations s
+		 SET discovered_from = p.seen_from
+		 FROM pending_stations p
+		 WHERE s.name = p.name AND s.discovered_from IS NULL`)
+	if err != nil {
+		return fmt.Errorf("copy provenance: %w", err)
+	}
 	tag, err := pool.Exec(ctx,
 		`DELETE FROM pending_stations p
 		 USING stations s
