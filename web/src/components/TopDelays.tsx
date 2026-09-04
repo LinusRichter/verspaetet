@@ -28,8 +28,8 @@ export function TopDelays() {
         {delays.map((d, i) => (
           <div key={i} className="delay-row">
             <div className="delay-line">
-              <Tip tip={`Linie ${d.line_label} am Bahnhof ${d.station_name}`}>
-                <span className="delay-badge">{d.line_label}</span>
+              <Tip tip={`${d.line_category}${d.train_number ? ` ${d.train_number}` : ''} am Bahnhof ${d.station_name}`}>
+                <span className="delay-badge">{d.line_category}{d.train_number ? ` ${d.train_number}` : ''}</span>
               </Tip>
               <Tip tip={`${Math.floor(d.delay_s / 60)}m ${d.delay_s % 60}s Verspätung`}>
                 <span className="delay-value">{fmtDelay(d.delay_s)}</span>

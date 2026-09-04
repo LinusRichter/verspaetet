@@ -4,15 +4,15 @@ import type { TripStop } from '../types'
 import { Tip } from './Tip'
 
 interface Props {
-  uuid: string
-  date: string | null
+  stopId: string
   lineLabel: string
-  onSelectStation: (slug: string, name: string) => void
+  onSelectStation?: (slug: string, name: string) => void
 }
 
 const catColors: Record<string, string> = {
-  fern: '#4a9eff', regio: '#4aff4a', s_bahn: '#ff9a4a', u_bahn: '#bb4aff',
-  bus: '#888', ersatz: '#ff4a4a', unknown: '#555',
+  ICE: '#4a9eff', IC: '#4a9eff', EC: '#4a9eff', TGV: '#4a9eff', RJ: '#4a9eff', ECE: '#4a9eff',
+  RE: '#4aff4a', RB: '#4aff4a', ME: '#4aff4a', IRE: '#4aff4a', MEX: '#4aff4a',
+  S: '#ff9a4a',
 }
 
 function fmtTime(iso: string): string {
@@ -28,45 +28,41 @@ function fmtFull(iso: string): string {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 }
-function fmtDelay(s: number): string {
-  if (s === 0) return ''
+function fmtDelay(s: number | null): string {
+  if (s === null || s === 0) return ''
   const m = Math.floor(s / 60)
   const sec = s % 60
   return `+${m}m${sec > 0 ? ` ${sec}s` : ''}`
 }
 
-export function TripView({ uuid, date, lineLabel, onSelectStation }: Props) {
+export function TripView({ stopId, lineLabel }: Props) {
   const [stops, setStops] = useState<TripStop[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
-    fetchTripStops(uuid, date || undefined).then(s => { setStops(s); setLoading(false) }).catch(console.error)
-  }, [uuid, date])
+    fetchTripStops(stopId).then(s => { setStops(s); setLoading(false) }).catch(console.error)
+  }, [stopId])
 
   const first = stops[0]
 
   return (
     <div className="event-view">
       <div className="list-header">
-        <Tip tip={`Die Haltestellen einer einzelnen Fahrt (${lineLabel}) über alle Bahnhöfe hinweg. Geordnet nach geplanter Zeit. Klick auf einen Bahnhof öffnet dessen Ansicht.`}>
-          {lineLabel} — Fahrt {uuid.slice(0, 8)} {date || ''}
+        <Tip tip={`Die Haltestellen einer einzelnen Fahrt (${lineLabel}) über alle Bahnhöfe hinweg. Geordnet nach geplanter Zeit.`}>
+          {lineLabel} — Fahrt (Tages-ID {stopId.split('-').slice(-2).join('-')})
         </Tip>
       </div>
       {first && (
         <div className="route-bar">
           <span className="line-badge" style={{ background: catColors[first.line_category] || '#555' }}>
-            {first.line_label}
+            {first.line_category}{first.train_number ? ` ${first.train_number}` : ''}
           </span>
           <span className="route-station">{first.station_name}</span>
           <span className="route-arrow">→</span>
           {stops.slice(1).map(s => (
             <span key={s.station_eva} className="route-seg">
-              <a
-                className="route-link"
-                onClick={() => onSelectStation(s.station_slug, s.station_name)}
-                title={`Öffne ${s.station_name}`}
-              >{s.station_name}</a>
+              <span className="route-link">{s.station_name}</span>
               <span className="route-arrow">›</span>
             </span>
           ))}
@@ -77,38 +73,30 @@ export function TripView({ uuid, date, lineLabel, onSelectStation }: Props) {
         <table className="event-table">
           <thead>
             <tr>
-              <th><Tip tip="Bahnhof. Klickbar — öffnet die Ansicht des Bahnhofs.">Station</Tip></th>
-              <th><Tip tip="Ankunft (←) oder Abfahrt (→) an diesem Bahnhof.">Dir</Tip></th>
+              <th><Tip tip="Bahnhof.">Station</Tip></th>
               <th><Tip tip="Die geplante Zeit laut Fahrplan.">Planned</Tip></th>
-              <th><Tip tip="Die tatsächliche/aktualisierte Zeit. — = noch keine Abweichung gemeldet.">Actual</Tip></th>
-              <th><Tip tip="Verspätung = tatsächlich minus geplant. Rot wenn > 0 (zu spät), blau wenn < 0 (zu früh).">Delay</Tip></th>
+              <th><Tip tip="Die aktuelle Prognose/Ist-Zeit. — = noch keine Abweichung gemeldet.">Actual</Tip></th>
+              <th><Tip tip="Verspätung = aktuell minus geplant. Rot wenn > 0 (zu spät), blau wenn < 0 (zu früh).">Delay</Tip></th>
               <th><Tip tip="Gleis. Orange 'was X' = Gleiswechsel.">Plat</Tip></th>
-              <th><Tip tip="Wann der Crawler diese Beobachtung von der Tafel gelesen hat.">Scraped</Tip></th>
+              <th><Tip tip="Wann der Crawler diese Beobachtung gelesen hat.">Scraped</Tip></th>
             </tr>
           </thead>
           <tbody>
             {stops.map(s => (
               <tr key={s.station_eva}>
-                <td>
-                  <a className="route-link" onClick={() => onSelectStation(s.station_slug, s.station_name)}>
-                    {s.station_name || s.station_slug}
-                  </a>
-                </td>
-                <td className={s.direction === 'departure' ? 'dep' : 'arr'}>
-                  <Tip tip={s.direction === 'departure' ? 'Abfahrt' : 'Ankunft'}>
-                    {s.direction === 'departure' ? '→' : '←'}
-                  </Tip>
-                </td>
+                <td>{s.station_name}</td>
                 <td><Tip tip={`Geplant: ${fmtFull(s.planned_time)}`}>{fmtTime(s.planned_time)}</Tip></td>
                 <td>{s.actual_time
-                  ? <Tip tip={`Tatsächlich: ${fmtFull(s.actual_time)}`}>{fmtTime(s.actual_time)}</Tip>
+                  ? <Tip tip={`Aktuell: ${fmtFull(s.actual_time)}`}>{fmtTime(s.actual_time)}</Tip>
                   : '—'}</td>
-                <td className={s.delay_s > 0 ? 'delayed' : s.delay_s < 0 ? 'early' : ''}>
-                  <Tip tip={s.delay_s > 0
-                    ? `${Math.floor(s.delay_s / 60)}m ${s.delay_s % 60}s Verspätung`
-                    : s.delay_s < 0
-                      ? `${Math.floor(-s.delay_s / 60)}m zu früh`
-                      : 'Pünktlich (keine Abweichung gemeldet)'}>
+                <td className={(s.delay_s ?? 0) > 0 ? 'delayed' : (s.delay_s ?? 0) < 0 ? 'early' : ''}>
+                  <Tip tip={s.delay_s === null
+                    ? 'Keine Abweichung gemeldet'
+                    : (s.delay_s > 0
+                      ? `${Math.floor(s.delay_s / 60)}m ${s.delay_s % 60}s Verspätung`
+                      : s.delay_s < 0
+                        ? `${Math.floor(-s.delay_s / 60)}m zu früh`
+                        : 'Pünktlich')}>
                     {fmtDelay(s.delay_s)}
                   </Tip>
                 </td>

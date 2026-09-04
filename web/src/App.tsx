@@ -13,13 +13,13 @@ function App() {
   const [slug, setSlug] = useState<string | null>(null)
   const [name, setName] = useState<string | null>(null)
   const [line, setLine] = useState<string | null>(null)
-  const [trip, setTrip] = useState<{ uuid: string; date: string | null } | null>(null)
+  const [trip, setTrip] = useState<string | null>(null)
 
   const selectStation = (s: string, n: string) => { setSlug(s); setName(n); setLine(null); setTrip(null) }
   const reset = () => { setSlug(null); setName(null); setLine(null); setTrip(null) }
   const resetLine = () => { setLine(null); setTrip(null) }
   const handleSelectStation = (s: string, n: string) => { setLine(null); setTrip(null); setSlug(s); setName(n) }
-  const handleSelectTrip = (uuid: string, date: string | null) => { setTrip({ uuid, date }) }
+  const handleSelectTrip = (stopId: string) => { setTrip(stopId) }
 
   return (
     <div className="app">
@@ -42,7 +42,7 @@ function App() {
             </>
           )}
           {slug && line && !trip && <EventTable slug={slug} lineLabel={line} stationName={name!} onSelectStation={handleSelectStation} onSelectTrip={handleSelectTrip} />}
-          {slug && line && trip && <TripView uuid={trip.uuid} date={trip.date} lineLabel={line} onSelectStation={handleSelectStation} />}
+          {slug && line && trip && <TripView stopId={trip} lineLabel={line} onSelectStation={handleSelectStation} />}
         </div>
       </div>
     </div>

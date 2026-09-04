@@ -6,17 +6,19 @@ import { Tip } from './Tip'
 interface Props {
   slug: string
   stationName: string
-  onSelect: (lineLabel: string) => void
+  onSelect: (lineCategory: string) => void
 }
 
 const catColors: Record<string, string> = {
-  fern: '#4a9eff', regio: '#4aff4a', s_bahn: '#ff9a4a', u_bahn: '#bb4aff',
-  bus: '#888', ersatz: '#ff4a4a', unknown: '#555',
+  ICE: '#4a9eff', IC: '#4a9eff', EC: '#4a9eff', TGV: '#4a9eff', RJ: '#4a9eff', ECE: '#4a9eff',
+  RE: '#4aff4a', RB: '#4aff4a', ME: '#4aff4a', IRE: '#4aff4a', MEX: '#4aff4a',
+  S: '#ff9a4a',
 }
 const catNames: Record<string, string> = {
-  fern: 'Fernverkehr (ICE, TGV, EC)', regio: 'Regionalverkehr (RE, RB, MEX)',
-  s_bahn: 'S-Bahn', u_bahn: 'U-Bahn', bus: 'Bus',
-  ersatz: 'Ersatzverkehr', unknown: 'Nicht klassifiziert',
+  ICE: 'ICE (Hochgeschwindigkeitszug)', IC: 'Intercity', EC: 'Eurocity',
+  TGV: 'TGV (Frankreich)', RJ: 'Railjet (ÖBB)', ECE: 'Eurocity Express',
+  RE: 'Regionalexpress', RB: 'Regionalbahn', ME: 'Metronom', IRE: 'Interregio-Express',
+  MEX: 'Metropolexpress', S: 'S-Bahn',
 }
 
 export function LineList({ slug, stationName, onSelect }: Props) {
@@ -33,26 +35,26 @@ export function LineList({ slug, stationName, onSelect }: Props) {
   return (
     <div className="list-view">
       <div className="list-header">
-        <Tip tip={`Alle Linien, die an ${stationName} halten oder durchfahren. Klick auf eine Zeile zeigt die Abfahrten/Ankünfte dieser Linie.`}>
-          {stationName} — Linien
+        <Tip tip={`Alle Zugkategorien, die an ${stationName} halten oder durchfahren. Klick auf eine Zeile zeigt die Abfahrten/Ankünfte dieser Kategorie.`}>
+          {stationName} — Zugkategorien
         </Tip>
       </div>
       {loading && <div className="loading">Loading…</div>}
       <div className="scroll-list">
         {lines.map(l => (
-          <div key={l.line_label + l.line_category} className="list-row" onClick={() => onSelect(l.line_label)}>
-            <Tip tip={`Linien-Label: ${l.line_label}. Kategorie: ${catNames[l.line_category] || l.line_category}.`}>
+          <div key={l.line_category + l.train_number} className="list-row" onClick={() => onSelect(l.line_category)}>
+            <Tip tip={`Kategorie: ${catNames[l.line_category] || l.line_category}.`}>
               <span className="line-badge" style={{ background: catColors[l.line_category] || '#555' }}>
-                {l.line_label}
+                {l.line_category}
               </span>
             </Tip>
-            <Tip tip={`Anzahl der gescrapten Beobachtungen (StopEvents) dieser Linie an diesem Bahnhof. Klick = diese Linie öffnen.`}>
-              <span className="badge clickable-badge" onClick={e => { e.stopPropagation(); onSelect(l.line_label) }}>
+            <Tip tip={`Anzahl der aufgezeichneten Beobachtungen dieser Kategorie an diesem Bahnhof. Klick = diese Kategorie öffnen.`}>
+              <span className="badge clickable-badge" onClick={e => { e.stopPropagation(); onSelect(l.line_category) }}>
                 {l.stop_events}
               </span>
             </Tip>
-            <Tip tip={`Durchschnittliche Verspätung dieser Linie an ${stationName}, über alle Beobachtungen gemittelt.`}>
-              <span className={l.avg_delay_s > 300 ? 'delayed' : ''} onClick={e => { e.stopPropagation(); onSelect(l.line_label) }}>
+            <Tip tip={`Durchschnittliche Verspätung dieser Kategorie an ${stationName}, über alle Beobachtungen gemittelt.`}>
+              <span className={l.avg_delay_s > 300 ? 'delayed' : ''} onClick={e => { e.stopPropagation(); onSelect(l.line_category) }}>
                 {fmtDelay(l.avg_delay_s)}
               </span>
             </Tip>

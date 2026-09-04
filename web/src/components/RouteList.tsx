@@ -6,18 +6,20 @@ import { Tip } from './Tip'
 interface Props {
   slug: string
   stationName: string
-  onSelectLine: (lineLabel: string) => void
+  onSelectLine: (lineCategory: string) => void
   onSelectStation: (slug: string, name: string) => void
 }
 
 const catColors: Record<string, string> = {
-  fern: '#4a9eff', regio: '#4aff4a', s_bahn: '#ff9a4a', u_bahn: '#bb4aff',
-  bus: '#888', ersatz: '#ff4a4a', unknown: '#555',
+  ICE: '#4a9eff', IC: '#4a9eff', EC: '#4a9eff', TGV: '#4a9eff', RJ: '#4a9eff', ECE: '#4a9eff',
+  RE: '#4aff4a', RB: '#4aff4a', ME: '#4aff4a', IRE: '#4aff4a', MEX: '#4aff4a',
+  S: '#ff9a4a',
 }
 const catNames: Record<string, string> = {
-  fern: 'Fernverkehr (ICE, TGV, EC)', regio: 'Regionalverkehr (RE, RB, MEX)',
-  s_bahn: 'S-Bahn', u_bahn: 'U-Bahn', bus: 'Bus',
-  ersatz: 'Ersatzverkehr', unknown: 'Nicht klassifiziert',
+  ICE: 'ICE (Hochgeschwindigkeitszug)', IC: 'Intercity', EC: 'Eurocity',
+  TGV: 'TGV (Frankreich)', RJ: 'Railjet (ÖBB)', ECE: 'Eurocity Express',
+  RE: 'Regionalexpress', RB: 'Regionalbahn', ME: 'Metronom', IRE: 'Interregio-Express',
+  MEX: 'Metropolexpress', S: 'S-Bahn',
 }
 
 export function RouteList({ slug, stationName, onSelectLine, onSelectStation }: Props) {
@@ -33,16 +35,16 @@ export function RouteList({ slug, stationName, onSelectLine, onSelectStation }: 
     fetchRoutes(slug).then(r => { setRoutes(r); setLoading(false) }).catch(console.error)
   }, [slug])
 
-  const nameFor = (s: string): string => {
-    const st = stations.find(x => x.slug === s)
-    return st ? st.name : s
+  const slugForName = (name: string): string | null => {
+    const st = stations.find(x => x.name === name)
+    return st ? st.slug : null
   }
   const fmtDelay = (s: number) => s > 0 ? `+${Math.floor(s / 60)}m` : '—'
 
   return (
     <div className="list-view">
       <div className="list-header">
-        <Tip tip={`Diese Züge/Linien wurden an ${stationName} beobachtet. Jede Zeile zeigt wohin der Zug fährt (Richtung) und über welche Bahnhöfe (Zwischenhalte). Bahnhöfe sind klickbar — so kannst du zwischen den Bahnhöfen navigieren.`}>
+        <Tip tip={`Diese Züge wurden an ${stationName} beobachtet. Jede Zeile zeigt wohin der Zug fährt (Richtung) und über welche Bahnhöfe (Zwischenhalte).`}>
           {stationName} — Routen
         </Tip>
       </div>
@@ -50,13 +52,13 @@ export function RouteList({ slug, stationName, onSelectLine, onSelectStation }: 
       <div className="scroll-list">
         {routes.map((r, i) => (
           <div
-            key={r.line_label + r.line_category + r.direction_name + i}
+            key={r.line_category + r.train_number + r.direction_name + i}
             className="route-row"
-            onClick={() => onSelectLine(r.line_label)}
+            onClick={() => onSelectLine(r.line_category)}
           >
-            <Tip tip={`Linie ${r.line_label} (${catNames[r.line_category] || r.line_category}). Klick = Beobachtungen dieser Linie ansehen.`}>
+            <Tip tip={`${r.line_category}${r.train_number ? ` ${r.train_number}` : ''} (${catNames[r.line_category] || r.line_category}). Klick = Beobachtungen dieser Kategorie ansehen.`}>
               <span className="line-badge" style={{ background: catColors[r.line_category] || '#555' }}>
-                {r.line_label}
+                {r.line_category}
               </span>
             </Tip>
             <Tip tip={`Anzahl der Beobachtungen dieser Fahrtrichtung an ${stationName}.`}>
@@ -66,24 +68,27 @@ export function RouteList({ slug, stationName, onSelectLine, onSelectStation }: 
               <span className={r.avg_delay_s > 300 ? 'delayed' : ''}>{fmtDelay(r.avg_delay_s)}</span>
             </Tip>
             <span className="route-flow">
-              {r.via_slugs.map((vs, j) => (
-                <span key={vs + j} className="route-seg">
-                  <a
-                    className="route-link"
-                    onClick={e => { e.stopPropagation(); onSelectStation(vs, nameFor(vs)) }}
-                    title={`Öffne ${nameFor(vs)}`}
-                  >{nameFor(vs)}</a>
-                  <span className="route-arrow">›</span>
-                </span>
-              ))}
-              {r.direction_slug && r.direction_name ? (
-                <a
-                  className="route-link route-dest"
-                  onClick={e => { e.stopPropagation(); onSelectStation(r.direction_slug!, nameFor(r.direction_slug!)) }}
-                  title={`Öffne ${r.direction_name} (Zielbahnhof)`}
-                >{r.direction_name}</a>
+              {r.via_path.map((vs, j) => {
+                const target = slugForName(vs)
+                return (
+                  <span key={vs + j} className="route-seg">
+                    {target ? (
+                      <a
+                        className="route-link"
+                        onClick={e => { e.stopPropagation(); onSelectStation(target, vs) }}
+                        title={`Öffne ${vs}`}
+                      >{vs}</a>
+                    ) : (
+                      <span title="Bahnhof nicht in der Stationliste">{vs}</span>
+                    )}
+                    <span className="route-arrow">›</span>
+                  </span>
+                )
+              })}
+              {r.direction_name ? (
+                <span className="route-dest">{r.direction_name}</span>
               ) : (
-                <span className="route-dest">{r.direction_name || '—'}</span>
+                <span className="route-dest">—</span>
               )}
             </span>
           </div>

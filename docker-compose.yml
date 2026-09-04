@@ -1,10 +1,12 @@
-# docker-compose.yml — verspaetet production stack (asynq version).
+# docker-compose.yml — verspaetet production stack (asynq + IRIS).
 #
 # Services: postgres (data), redis (asynq job queue), asynqmon (job UI),
-# migrate (one-shot schema), worker (board fetch + persist),
-# scheduler (periodic monitors), seeder (one-shot discovery), api (Web UI + JSON).
+# migrate (one-shot schema), stationimport (one-shot StaDa station universe),
+# worker (IRIS board fetch + persist), scheduler (30-min tick loop),
+# api (Web UI + JSON).
 #
-# Temporal is GONE — replaced by asynq + redis + asynqmon.
+# Data source: DB Timetables API (IRIS) — free plan, 60 req/min.
+# Auth: DB-Client-ID + DB-Api-Key headers (both from developers.deutschebahn.com).
 x-logging: &default-logging
   driver: json-file
   options:
@@ -43,7 +45,7 @@ services:
     volumes:
       - verspaetet_redis:/data
 
-  # asynqmon — web UI for the asynq job queue (replaces Temporal UI).
+  # asynqmon — web UI for the asynq job queue.
   asynqmon:
     image: hibiken/asynqmon:latest
     restart: unless-stopped
@@ -70,8 +72,32 @@ services:
        "postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable", "up"]
     restart: "no"
 
-  # worker — handles board:fetch + discovery:fetch tasks (replaces both
-  # Temporal workers).
+  # stationimport (one-shot): StaDa → stations universe (all ~5400 active
+  # stations with EVA, name, lat/lon, category). Also resolves pending
+  # discovery names. Re-run any time; StaDa terms allow ~1 call/day.
+  # CSV fallback: command: ["/app/bin/stationimport", "--csv=/stations.csv"]
+  stationimport:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM golang:alpine
+        WORKDIR /app
+        COPY . .
+        RUN go mod download
+        RUN go build -o /app/bin/stationimport ./cmd/stationimport
+        CMD ["/app/bin/stationimport"]
+    environment:
+      - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
+      - IRIS_CLIENT_ID=${IRIS_CLIENT_ID}
+      - IRIS_API_KEY=${IRIS_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # worker — handles board:fetch tasks (IRIS /plan + /fchg → persist).
   worker:
     build:
       context: .
@@ -87,6 +113,8 @@ services:
     environment:
       - REDIS_ADDR=redis:6379
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
+      - IRIS_CLIENT_ID=${IRIS_CLIENT_ID}
+      - IRIS_API_KEY=${IRIS_API_KEY}
       - ASYNQ_CONCURRENCY=10
     depends_on:
       redis:
@@ -96,8 +124,8 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # scheduler — one periodic entry per station (replaces 5,500 StationMonitor
-  # workflows with ONE process).
+  # scheduler — enqueues board:fetch for every station whose fetch_offset
+  # matches the current minute slot (30-min cadence, ~180 stations/minute).
   scheduler:
     build:
       context: .
@@ -113,7 +141,6 @@ services:
     environment:
       - REDIS_ADDR=redis:6379
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
-      - MONITOR_CADENCE=30m
     depends_on:
       redis:
         condition: service_healthy
@@ -121,31 +148,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-
-  # seeder (one-shot: enqueues discovery tasks for all stations).
-  seeder:
-    build:
-      context: .
-      dockerfile_inline: |
-        FROM golang:alpine
-        WORKDIR /app
-        COPY . .
-        RUN go mod download
-        RUN go build -o /app/bin/seeder ./cmd/seeder
-        CMD ["/app/bin/seeder"]
-    environment:
-      - REDIS_ADDR=redis:6379
-      - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      worker:
-        condition: service_started
-    restart: "no"
 
   api:
     build:

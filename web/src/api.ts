@@ -19,8 +19,8 @@ export async function fetchRoutes(slug: string): Promise<Route[]> {
   const r = await fetch(`${BASE}/api/stations/${slug}/routes`)
   return r.json()
 }
-export async function fetchEvents(slug: string, lineLabel: string): Promise<StopEvent[]> {
-  const r = await fetch(`${BASE}/api/stations/${slug}/lines/${encodeURIComponent(lineLabel)}/events`)
+export async function fetchEvents(slug: string, lineCategory: string): Promise<StopEvent[]> {
+  const r = await fetch(`${BASE}/api/stations/${slug}/lines/${encodeURIComponent(lineCategory)}/events`)
   return r.json()
 }
 export async function fetchTopDelays(limit: number = 20): Promise<TopDelay[]> {
@@ -35,8 +35,7 @@ export async function fetchHealth(): Promise<Health> {
   const r = await fetch(`${BASE}/api/health`)
   return r.json()
 }
-export async function fetchTripStops(uuid: string, date?: string): Promise<TripStop[]> {
-  const q = date ? `?date=${date}` : ''
-  const r = await fetch(`${BASE}/api/trips/${uuid}/stops${q}`)
+export async function fetchTripStops(stopId: string): Promise<TripStop[]> {
+  const r = await fetch(`${BASE}/api/trips/${encodeURIComponent(stopId)}/stops`)
   return r.json()
 }
