@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<timetable eva="8000105" station="Frankfurt(Main)Hbf">
+  <s eva="8000105" id="-7874571842864554321-2609041000-12">
+    <tl c="ICE" n="577" o="DB" t="p" f=""/>
+    <dp pt="2609041000" pp="7" ps="p" ppth="Frankfurt(Main)Hbf|Mainz Hbf|Köln Hbf" pde="Köln Hbf" l="577"/>
+  </s>
+  <s eva="8000105" id="-7874571842864554322-2609041044-3">
+    <tl c="S" n="8" o="DB" t="s" f=""/>
+    <ar pt="2609041044" pp="101" ps="p" ppth="Frankfurt(Main)Hbf|Frankfurt(Main)Taunusanlage" pde="Wiesbaden Hbf" l="8"/>
+    <dp pt="2609041044" pp="101" ps="p" ppth="Offenbach(Main)Ost|Hanau Hbf" cde="Hanau Hbf" l="8"/>
+  </s>
+  <s eva="8000105" id="-7874571842864554324-2609041200-2">
+    <tl c="ICE" n="990" o="DB" t="p" f=""/>
+    <dp pt="2609041200" pp="3" ps="p" ppth="Frankfurt(Main)Hbf|Fulda|Kassel-Wilhelmshöhe" pde="Berlin Hbf" l="990"/>
+  </s>
+</timetable>

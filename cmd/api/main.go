@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,44 +15,46 @@ import (
 )
 
 type stationRow struct {
-	Eva         string `json:"eva"`
-	Slug        string `json:"slug"`
-	Name        string `json:"name"`
-	Category    *int   `json:"category"`
-	StopEvents  int    `json:"stop_events"`
+	Eva          string  `json:"eva"`
+	Slug         string  `json:"slug"`
+	Name         string  `json:"name"`
+	Category     *int    `json:"category"`
+	Lat          *float64 `json:"lat"`
+	Lon          *float64 `json:"lon"`
+	FederalState *string `json:"federal_state"`
+	StopEvents   int     `json:"stop_events"`
 }
 
 type lineRow struct {
-	LineLabel    string `json:"line_label"`
 	LineCategory string `json:"line_category"`
+	TrainNumber  string `json:"train_number"`
 	StopEvents   int    `json:"stop_events"`
 	AvgDelayS    int    `json:"avg_delay_s"`
 }
 
 type eventRow struct {
-	ID              int64      `json:"id"`
-	Direction       string     `json:"direction"`
-	LineLabel      string     `json:"line_label"`
-	LineCategory   string     `json:"line_category"`
-	DirectionName   *string    `json:"direction_name"`
-	DirectionSlug   *string    `json:"direction_slug"`
-	ViaSlugs        []string   `json:"via_slugs"`
-	TripUUID        string     `json:"trip_uuid"`
-	TripID          string     `json:"trip_id"`
-	TripDate        string     `json:"trip_date"`
-	StationName     *string    `json:"station_name"`
-	PlannedTime     time.Time  `json:"planned_time"`
-	ActualTime      *time.Time `json:"actual_time"`
-	DelayS          int        `json:"delay_s"`
-	Platform        *string    `json:"platform"`
-	PlannedPlatform *string    `json:"planned_platform"`
-	Notes           *string    `json:"notes"`
-	ScrapedAt       time.Time  `json:"scraped_at"`
+	ID            int64      `json:"id"`
+	Direction     string     `json:"direction"`
+	LineCategory  string     `json:"line_category"`
+	TrainNumber   string     `json:"train_number"`
+	Owner         *string    `json:"owner"`
+	StopID        string     `json:"stop_id"`
+	DirectionName *string    `json:"direction_name"`
+	ViaPath       []string   `json:"via_path"`
+	PlannedTime   time.Time  `json:"planned_time"`
+	ActualTime    *time.Time `json:"actual_time"`
+	DelayS        *int       `json:"delay_s"`
+	Platform      *string    `json:"platform"`
+	PlannedPlatform *string  `json:"planned_platform"`
+	Cancelled     bool       `json:"cancelled"`
+	ScrapedAt     time.Time  `json:"scraped_at"`
+	StationName   *string    `json:"station_name"`
 }
 
 type topDelayRow struct {
 	StationName   string     `json:"station_name"`
-	LineLabel     string     `json:"line_label"`
+	LineCategory  string     `json:"line_category"`
+	TrainNumber   *string    `json:"train_number"`
 	DirectionName *string    `json:"direction_name"`
 	PlannedTime   time.Time  `json:"planned_time"`
 	ActualTime    *time.Time `json:"actual_time"`
@@ -62,13 +63,25 @@ type topDelayRow struct {
 }
 
 type routeRow struct {
-	LineLabel     string   `json:"line_label"`
 	LineCategory  string   `json:"line_category"`
+	TrainNumber   string   `json:"train_number"`
 	DirectionName *string  `json:"direction_name"`
-	DirectionSlug *string  `json:"direction_slug"`
-	ViaSlugs      []string `json:"via_slugs"`
+	ViaPath       []string `json:"via_path"`
 	StopEvents    int      `json:"stop_events"`
 	AvgDelayS     int      `json:"avg_delay_s"`
+}
+
+type tripStopRow struct {
+	StationEva      string     `json:"station_eva"`
+	StationName     string     `json:"station_name"`
+	LineCategory    string     `json:"line_category"`
+	TrainNumber     string     `json:"train_number"`
+	PlannedTime     time.Time  `json:"planned_time"`
+	ActualTime      *time.Time `json:"actual_time"`
+	DelayS          *int       `json:"delay_s"`
+	Platform        *string    `json:"platform"`
+	PlannedPlatform *string    `json:"planned_platform"`
+	ScrapedAt       time.Time  `json:"scraped_at"`
 }
 
 type statsRow struct {
@@ -80,11 +93,11 @@ type statsRow struct {
 }
 
 type healthRow struct {
-	RecentRuns     int     `json:"recent_runs"`
-	RecentEvents   int     `json:"recent_events"`
-	LastScrapeAgo  int     `json:"last_scrape_ago_s"`
-	ExpectedRuns   int     `json:"expected_runs"`
-	FetchRate      float64 `json:"fetch_rate"`
+	RecentRuns    int     `json:"recent_runs"`
+	RecentEvents  int     `json:"recent_events"`
+	LastScrapeAgo int     `json:"last_scrape_ago_s"`
+	ExpectedRuns  int     `json:"expected_runs"`
+	FetchRate     float64 `json:"fetch_rate"`
 }
 
 func main() {
@@ -115,8 +128,8 @@ func main() {
 	mux.HandleFunc("GET /api/stations/{slug}/routes", func(w http.ResponseWriter, r *http.Request) {
 		handleRoutes(w, r, pool, r.PathValue("slug"))
 	})
-	mux.HandleFunc("GET /api/trips/{uuid}/stops", func(w http.ResponseWriter, r *http.Request) {
-		handleTripStops(w, r, pool, r.PathValue("uuid"))
+	mux.HandleFunc("GET /api/trips/{stopId}/stops", func(w http.ResponseWriter, r *http.Request) {
+		handleTripStops(w, r, pool, r.PathValue("stopId"))
 	})
 	mux.HandleFunc("GET /api/delays/top", func(w http.ResponseWriter, r *http.Request) {
 		handleTopDelays(w, r, pool)
@@ -158,10 +171,11 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 func handleStations(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 	rows, err := pool.Query(r.Context(), `
-		SELECT s.eva, s.slug, s.name, s.category, count(se.id) AS stop_events
+		SELECT s.eva, s.slug, s.name, s.category, s.lat, s.lon, s.federal_state,
+		       count(se.id) AS stop_events
 		FROM stations s
 		LEFT JOIN stop_events se ON se.station_eva = s.eva
-		GROUP BY s.eva, s.slug, s.name, s.category
+		GROUP BY s.eva, s.slug, s.name, s.category, s.lat, s.lon, s.federal_state
 		ORDER BY s.name`)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("query stations: %v", err))
@@ -171,14 +185,9 @@ func handleStations(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) 
 	var out []stationRow
 	for rows.Next() {
 		var s stationRow
-		var cat sql.NullInt64
-		if err := rows.Scan(&s.Eva, &s.Slug, &s.Name, &cat, &s.StopEvents); err != nil {
+		if err := rows.Scan(&s.Eva, &s.Slug, &s.Name, &s.Category, &s.Lat, &s.Lon, &s.FederalState, &s.StopEvents); err != nil {
 			writeError(w, 500, fmt.Sprintf("scan: %v", err))
 			return
-		}
-		if cat.Valid {
-			c := int(cat.Int64)
-			s.Category = &c
 		}
 		out = append(out, s)
 	}
@@ -190,11 +199,11 @@ func handleStations(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) 
 
 func handleLines(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, slug string) {
 	rows, err := pool.Query(r.Context(), `
-		SELECT se.line_label, se.line_category, count(*) AS stop_events,
-		       avg(COALESCE(EXTRACT(EPOCH FROM (se.actual_time - se.planned_time)), 0))::int AS avg_delay_s
+		SELECT se.line_category, COALESCE(se.train_number, ''), count(*) AS stop_events,
+		       COALESCE(avg(EXTRACT(EPOCH FROM (se.actual_time - se.planned_time)))::int, 0) AS avg_delay_s
 		FROM stop_events se
 		WHERE se.station_eva = (SELECT eva FROM stations WHERE slug = $1)
-		GROUP BY se.line_label, se.line_category
+		GROUP BY se.line_category, se.train_number
 		ORDER BY stop_events DESC`, slug)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("query lines: %v", err))
@@ -204,7 +213,7 @@ func handleLines(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, slu
 	var out []lineRow
 	for rows.Next() {
 		var l lineRow
-		if err := rows.Scan(&l.LineLabel, &l.LineCategory, &l.StopEvents, &l.AvgDelayS); err != nil {
+		if err := rows.Scan(&l.LineCategory, &l.TrainNumber, &l.StopEvents, &l.AvgDelayS); err != nil {
 			writeError(w, 500, fmt.Sprintf("scan: %v", err))
 			return
 		}
@@ -218,16 +227,16 @@ func handleLines(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, slu
 
 func handleEvents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, slug, lineLabel string) {
 	rows, err := pool.Query(r.Context(), `
-		SELECT se.id, se.direction, se.line_label, se.line_category, se.direction_name, se.direction_slug,
-		       se.via_slugs, se.trip_uuid, se.trip_id, to_char(se.trip_date, 'YYYY-MM-DD') AS trip_date,
-		       st.name AS station_name, se.planned_time, se.actual_time,
-		       COALESCE(EXTRACT(EPOCH FROM (se.actual_time - se.planned_time)), 0)::int AS delay_s,
-		       se.platform, se.planned_platform, nt.text AS notes, se.scraped_at
+		SELECT se.id, se.direction, se.line_category, se.train_number, se.owner,
+		       se.stop_id, se.direction_name, se.via_path,
+		       se.planned_time, se.actual_time,
+		       EXTRACT(EPOCH FROM (se.actual_time - se.planned_time))::int AS delay_s,
+		       se.platform, se.planned_platform, se.cancelled, se.scraped_at,
+		       st.name AS station_name
 		FROM stop_events se
 		JOIN stations st ON st.eva = se.station_eva
-		LEFT JOIN note_texts nt ON nt.id = se.notes_id
 		WHERE se.station_eva = (SELECT eva FROM stations WHERE slug = $1)
-		  AND se.line_label = $2
+		  AND se.line_category = $2
 		ORDER BY se.scraped_at DESC
 		LIMIT 200`, slug, lineLabel)
 	if err != nil {
@@ -238,15 +247,15 @@ func handleEvents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, sl
 	var out []eventRow
 	for rows.Next() {
 		var e eventRow
-		if err := rows.Scan(&e.ID, &e.Direction, &e.LineLabel, &e.LineCategory, &e.DirectionName, &e.DirectionSlug,
-			&e.ViaSlugs, &e.TripUUID, &e.TripID, &e.TripDate, &e.StationName,
-			&e.PlannedTime, &e.ActualTime,
-			&e.DelayS, &e.Platform, &e.PlannedPlatform, &e.Notes, &e.ScrapedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Direction, &e.LineCategory, &e.TrainNumber, &e.Owner,
+			&e.StopID, &e.DirectionName, &e.ViaPath,
+			&e.PlannedTime, &e.ActualTime, &e.DelayS,
+			&e.Platform, &e.PlannedPlatform, &e.Cancelled, &e.ScrapedAt, &e.StationName); err != nil {
 			writeError(w, 500, fmt.Sprintf("scan: %v", err))
 			return
 		}
-		if e.ViaSlugs == nil {
-			e.ViaSlugs = []string{}
+		if e.ViaPath == nil {
+			e.ViaPath = []string{}
 		}
 		out = append(out, e)
 	}
@@ -256,78 +265,14 @@ func handleEvents(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, sl
 	writeJSON(w, out)
 }
 
-func handleTripStops(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, uuid string) {
-	date := r.URL.Query().Get("date")
-	// DISTINCT ON (station_eva) keeps the LATEST observation per station (the
-	// most recent scraped_at), so each stop appears once with its freshest
-	// planned/actual times. Rows are then ordered by planned_time so the stop
-	// sequence reads naturally.
-	query := `
-		SELECT DISTINCT ON (se.station_eva)
-		       se.station_eva, st.slug AS station_slug, st.name AS station_name,
-		       se.direction, se.line_label, se.line_category,
-		       se.planned_time, se.actual_time,
-		       COALESCE(EXTRACT(EPOCH FROM (se.actual_time - se.planned_time)), 0)::int AS delay_s,
-		       se.platform, se.planned_platform, se.scraped_at
-		FROM stop_events se
-		JOIN stations st ON st.eva = se.station_eva
-		WHERE se.trip_uuid = $1`
-	args := []interface{}{uuid}
-	if date != "" {
-		query += ` AND se.trip_date = $2`
-		args = append(args, date)
-	}
-	query += ` ORDER BY se.station_eva, se.scraped_at DESC`
-	rows, err := pool.Query(r.Context(), query, args...)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("query trip stops: %v", err))
-		return
-	}
-	defer rows.Close()
-
-	type stopRow struct {
-		StationEva      string     `json:"station_eva"`
-		StationSlug     string     `json:"station_slug"`
-		StationName     string     `json:"station_name"`
-		Direction       string     `json:"direction"`
-		LineLabel       string     `json:"line_label"`
-		LineCategory    string     `json:"line_category"`
-		PlannedTime     time.Time  `json:"planned_time"`
-		ActualTime      *time.Time `json:"actual_time"`
-		DelayS          int        `json:"delay_s"`
-		Platform        *string    `json:"platform"`
-		PlannedPlatform *string    `json:"planned_platform"`
-		ScrapedAt       time.Time  `json:"scraped_at"`
-	}
-	var out []stopRow
-	for rows.Next() {
-		var s stopRow
-		if err := rows.Scan(&s.StationEva, &s.StationSlug, &s.StationName, &s.Direction,
-			&s.LineLabel, &s.LineCategory, &s.PlannedTime, &s.ActualTime, &s.DelayS,
-			&s.Platform, &s.PlannedPlatform, &s.ScrapedAt); err != nil {
-			writeError(w, 500, fmt.Sprintf("scan: %v", err))
-			return
-		}
-		out = append(out, s)
-	}
-	// Sort by planned_time so the stops read in journey order.
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].PlannedTime.Before(out[j].PlannedTime)
-	})
-	if out == nil {
-		out = []stopRow{}
-	}
-	writeJSON(w, out)
-}
-
 func handleRoutes(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, slug string) {
 	rows, err := pool.Query(r.Context(), `
-		SELECT line_label, line_category, direction_name, direction_slug,
-		       via_slugs, count(*) AS stop_events,
-		       avg(COALESCE(EXTRACT(EPOCH FROM (actual_time - planned_time)), 0))::int AS avg_delay_s
+		SELECT line_category, COALESCE(train_number,''), direction_name, via_path,
+		       count(*) AS stop_events,
+		       COALESCE(avg(EXTRACT(EPOCH FROM (actual_time - planned_time)))::int, 0) AS avg_delay_s
 		FROM stop_events
 		WHERE station_eva = (SELECT eva FROM stations WHERE slug = $1)
-		GROUP BY line_label, line_category, direction_name, direction_slug, via_slugs
+		GROUP BY line_category, train_number, direction_name, via_path
 		ORDER BY stop_events DESC
 		LIMIT 100`, slug)
 	if err != nil {
@@ -338,18 +283,57 @@ func handleRoutes(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, sl
 	var out []routeRow
 	for rows.Next() {
 		var r2 routeRow
-		if err := rows.Scan(&r2.LineLabel, &r2.LineCategory, &r2.DirectionName, &r2.DirectionSlug,
-			&r2.ViaSlugs, &r2.StopEvents, &r2.AvgDelayS); err != nil {
+		if err := rows.Scan(&r2.LineCategory, &r2.TrainNumber, &r2.DirectionName, &r2.ViaPath, &r2.StopEvents, &r2.AvgDelayS); err != nil {
 			writeError(w, 500, fmt.Sprintf("scan: %v", err))
 			return
 		}
-		if r2.ViaSlugs == nil {
-			r2.ViaSlugs = []string{}
+		if r2.ViaPath == nil {
+			r2.ViaPath = []string{}
 		}
 		out = append(out, r2)
 	}
 	if out == nil {
 		out = []routeRow{}
+	}
+	writeJSON(w, out)
+}
+
+// handleTripStops reconstructs one trip's stop sequence from its stop id
+// prefix (the dailyTripId part of {dailyTripId}-{YYMMddHHmm}-{index}).
+func handleTripStops(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, stopIdPrefix string) {
+	rows, err := pool.Query(r.Context(), `
+		SELECT DISTINCT ON (se.station_eva)
+		       se.station_eva, st.name, se.line_category, se.train_number,
+		       se.planned_time, se.actual_time,
+		       EXTRACT(EPOCH FROM (se.actual_time - se.planned_time))::int AS delay_s,
+		       se.platform, se.planned_platform, se.scraped_at
+		FROM stop_events se
+		JOIN stations st ON st.eva = se.station_eva
+		WHERE split_part(se.stop_id, '-', 2) = split_part($1, '-', 2)
+		  AND se.stop_id LIKE '%' || split_part($1, '-', 2) || '%'
+		ORDER BY se.station_eva, se.scraped_at DESC`, stopIdPrefix)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("query trip stops: %v", err))
+		return
+	}
+	defer rows.Close()
+
+	var out []tripStopRow
+	for rows.Next() {
+		var s tripStopRow
+		if err := rows.Scan(&s.StationEva, &s.StationName, &s.LineCategory, &s.TrainNumber,
+			&s.PlannedTime, &s.ActualTime, &s.DelayS,
+			&s.Platform, &s.PlannedPlatform, &s.ScrapedAt); err != nil {
+			writeError(w, 500, fmt.Sprintf("scan: %v", err))
+			return
+		}
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].PlannedTime.Before(out[j].PlannedTime)
+	})
+	if out == nil {
+		out = []tripStopRow{}
 	}
 	writeJSON(w, out)
 }
@@ -362,7 +346,8 @@ func handleTopDelays(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 		}
 	}
 	rows, err := pool.Query(r.Context(), `
-		SELECT s.name, se.line_label, se.direction_name, se.planned_time, se.actual_time,
+		SELECT s.name, se.line_category, se.train_number, se.direction_name,
+		       se.planned_time, se.actual_time,
 		       COALESCE(EXTRACT(EPOCH FROM (se.actual_time - se.planned_time)), 0)::int AS delay_s,
 		       se.scraped_at
 		FROM stop_events se
@@ -378,8 +363,8 @@ func handleTopDelays(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool)
 	var out []topDelayRow
 	for rows.Next() {
 		var t topDelayRow
-		if err := rows.Scan(&t.StationName, &t.LineLabel, &t.DirectionName, &t.PlannedTime,
-			&t.ActualTime, &t.DelayS, &t.ScrapedAt); err != nil {
+		if err := rows.Scan(&t.StationName, &t.LineCategory, &t.TrainNumber, &t.DirectionName,
+			&t.PlannedTime, &t.ActualTime, &t.DelayS, &t.ScrapedAt); err != nil {
 			writeError(w, 500, fmt.Sprintf("scan: %v", err))
 			return
 		}
@@ -423,7 +408,6 @@ func handleHealth(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 		return
 	}
 	// Expected scrape_runs in 10 min = stations / 3 (30-min cadence = 1/3 per 10 min)
-	// Fetch rate = actual / expected, clamped to 1.0
 	expected := h.ExpectedRuns / 3
 	if expected > 0 {
 		h.FetchRate = float64(h.RecentRuns) / float64(expected)

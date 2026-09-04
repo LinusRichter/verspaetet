@@ -3,67 +3,50 @@ package shared
 import "time"
 
 // StopEvent is one row of a station board as observed at a single scrape —
-// the central persisted entity.
+// the central persisted entity. One IRIS <s> element yields up to two
+// StopEvents: arrival (<ar>) and departure (<dp>).
 type StopEvent struct {
 	ID              int64
 	ScrapeRunID     int64
-	StationSlug     string
 	StationEva      string
-	Direction       string
-	LineLabel       string
-	LineCategory    string
-	DirectionName   string
-	DirectionSlug   string
-	DirectionEva    string
+	Direction       string // "departure" | "arrival"
+	StopID          string // IRIS s.id — persistent stop key
+	TripDate        *time.Time
+	LineCategory    string // tl.c (ICE, RE, S, ...)
+	TrainNumber     string // tl.n
+	Owner           string // tl.o
+	TripKind        string // tl.t (p/e/z/s/h/n)
+	DirectionName   string // pde/cde
+	ViaPath         []string
 	PlannedTime     time.Time
 	ActualTime      *time.Time
-	Platform        string
 	PlannedPlatform string
-	ViaSlugs        []string
-	ViaEvas         []string
-	TripID          string
-	TripDate        *time.Time
-	TripUUID        string
-	Notes           string // raw notes text; resolved to notes_id by PersistStopEvent
-	NotesID         int64  // FK to note_texts.id; set by PersistStopEvent
+	Platform        string
+	Cancelled       bool
 	ScrapedAt       time.Time
-	ParentEva       string
-	StationName     string // resolved display name; used by PersistStopEvent when inserting a discovered station
-	Cancelled       bool   // true when the train is cancelled (notes contain "fällt heute aus" etc.)
+	ParentEva       string // station that discovered this one (path names), "" for direct scrapes
 }
 
-// FetchStationBoardInput is the input to the FetchStationBoard activity.
+// FetchStationBoardInput is the input to a board fetch.
 type FetchStationBoardInput struct {
-	Slug      string
-	Direction string
+	Eva      string
+	Direction string // "departure" | "arrival"
 }
 
-// FetchStationBoardResult is the output of FetchStationBoard. It returns
-// parsed StopEvents directly (no separate ParseBoard step needed) plus the
-// resolved station EVA and display name.
+// FetchStationBoardResult is the output of a board fetch.
 type FetchStationBoardResult struct {
-	Events       []StopEvent
-	ScrapedAt    time.Time
-	URL          string
-	ResolvedEva  string
-	ResolvedName string
+	Events    []StopEvent
+	ScrapedAt time.Time
 }
 
 // PersistResult is the output of PersistStopEvent.
-// See docs/architecture/activity-persist-stopevent.md.
 type PersistResult struct {
 	ScrapeRunID int64
-	NewStations []string
+	NewStations []string // route-path station names not yet in stations
 }
 
-// GetStationCadenceInput is the input to the GetStationCadence activity.
-// See docs/architecture/workflow-station-monitor.md.
-type GetStationCadenceInput struct {
-	StationSlug string
-}
-
-// GetStationCadenceResult is the output of GetStationCadence. Cadence is 0
-// if stations.cadence_override is NULL (caller falls back to 5m per ADR-06).
-type GetStationCadenceResult struct {
-	Cadence time.Duration
+// Slugify converts a station name to a lowercase URL-safe slug
+// (used for StaDa-derived stations; the old bahnhof.de slugs are gone).
+func Slugify(name string) string {
+	return slugify(name)
 }

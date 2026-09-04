@@ -21,12 +21,12 @@ import (
 
 // Usage:
 //   seeder migrate up                 apply all pending up-migrations
-//   seeder migrate down [N]           rollback the last N migrations (default 1)
-//   seeder [--station=<slug>] [--once]
-//   seeder                            full seed (enqueue discovery for all stations)
+//   seeder migrate down [N]           rollback the last N migrations
+//   seeder --eva=<eva> [--direction=departure|arrival]
+//   seeder                            enqueue a board:fetch for all stations (both directions)
 //
-// The periodic monitors are handled by cmd/scheduler — the seeder only
-// enqueues the initial discovery tasks (one per station).
+// Periodic monitoring is handled by cmd/scheduler — the seeder is only for
+// manual one-offs and initial dispatch.
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		runMigrateSubcommand(os.Args[2:])
@@ -34,55 +34,55 @@ func main() {
 	}
 
 	var (
-		stationSlug string
-		once        bool
+		eva       string
+		direction string
 	)
-	flag.StringVar(&stationSlug, "station", "", "constrain to one station (by bahnhof.de slug)")
-	flag.BoolVar(&once, "once", false, "run one discovery, then exit")
+	flag.StringVar(&eva, "eva", "", "enqueue one board fetch for this EVA")
+	flag.StringVar(&direction, "direction", "both", "departure|arrival|both (with --eva)")
 	flag.Parse()
 
 	redisAddr := envOr("REDIS_ADDR", "redis:6379")
 	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
 	defer client.Close()
 
-	if stationSlug != "" {
-		runOneStation(client, stationSlug, once)
+	if eva != "" {
+		directions := []string{"departure", "arrival"}
+		if direction == "departure" || direction == "arrival" {
+			directions = []string{direction}
+		}
+		for _, d := range directions {
+			enqueueBoardFetch(client, eva, d)
+		}
 		return
 	}
 	runFullSeed(client)
 }
 
-// runOneStation enqueues a discovery task for a single station.
-func runOneStation(client *asynq.Client, slug string, once bool) {
-	payload, err := json.Marshal(asynqtasks.DiscoveryPayload{Slug: slug})
+// enqueueBoardFetch enqueues a single board:fetch task.
+func enqueueBoardFetch(client *asynq.Client, eva, direction string) {
+	payload, err := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva, Direction: direction})
 	if err != nil {
 		log.Fatalln("marshal:", err)
 	}
-	taskOpts := []asynq.Option{
-		asynq.Queue(asynqtasks.QueueDiscovery),
+	info, err := client.Enqueue(
+		asynq.NewTask(asynqtasks.TypeBoardFetch, payload),
+		asynq.Queue(asynqtasks.QueueDefault),
 		asynq.MaxRetry(3),
-		asynq.TaskID("discovery:" + slug),
-	}
-	if once {
-		taskOpts = append(taskOpts, asynq.Unique(time.Hour))
-	}
-	info, err := client.Enqueue(asynq.NewTask(asynqtasks.TypeDiscovery, payload), taskOpts...)
+		asynq.Timeout(2*time.Minute),
+	)
 	if err != nil {
-		if errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Printf("[seeder] Discovery for %q already queued/running.", slug)
-			return
-		}
-		log.Fatalf("[seeder] Unable to enqueue discovery for %q: %v\n", slug, err)
+		log.Fatalf("[seeder] Unable to enqueue %s/%s: %v\n", eva, direction, err)
 	}
-	log.Printf("[seeder] Enqueued discovery: %s (id %s, queue %s)\n", slug, info.ID, info.Queue)
+	log.Printf("[seeder] Enqueued board:fetch %s/%s (id %s)\n", eva, direction, info.ID)
 }
 
-// runFullSeed enqueues discovery tasks for all stations in Postgres.
+// runFullSeed enqueues board:fetch (both directions) for every station in
+// Postgres — one initial scrape of the whole universe.
 func runFullSeed(client *asynq.Client) {
 	ctx := context.Background()
 	dsn := os.Getenv("POSTGRES_DSN")
 	if dsn == "" {
-		log.Fatalln("POSTGRES_DSN is not set; cannot read station list")
+		log.Fatalln("POSTGRES_DSN is not set")
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -90,55 +90,42 @@ func runFullSeed(client *asynq.Client) {
 	}
 	defer pool.Close()
 
-	rows, err := pool.Query(ctx, "SELECT slug FROM stations ORDER BY name")
+	rows, err := pool.Query(ctx, "SELECT eva FROM stations ORDER BY name")
 	if err != nil {
 		log.Fatalln("Unable to query stations:", err)
 	}
 	defer rows.Close()
 
-	var slugs []string
+	var evas []string
 	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			log.Fatalln("Scanning station slug:", err)
+		var e string
+		if err := rows.Scan(&e); err == nil {
+			evas = append(evas, e)
 		}
-		slugs = append(slugs, s)
 	}
-	if err := rows.Err(); err != nil {
-		log.Fatalln("Iterating station rows:", err)
+	if len(evas) == 0 {
+		log.Fatalln("No stations found (run stationimport first)")
 	}
-	if len(slugs) == 0 {
-		log.Fatalln("No stations found (run `seeder migrate up` first)")
-	}
-	log.Printf("[seeder] Full seed: enqueuing discovery for %d stations.\n", len(slugs))
+	log.Printf("[seeder] Full seed: enqueuing board:fetch for %d stations.\n", len(evas))
 
-	enqueued, skipped := 0, 0
-	for _, slug := range slugs {
-		payload, err := json.Marshal(asynqtasks.DiscoveryPayload{Slug: slug})
-		if err != nil {
-			continue
-		}
-		_, err = client.Enqueue(
-			asynq.NewTask(asynqtasks.TypeDiscovery, payload),
-			asynq.Queue(asynqtasks.QueueDiscovery),
-			asynq.MaxRetry(3),
-			asynq.TaskID("discovery:"+slug),
-			asynq.Unique(time.Hour),
-		)
-		if err != nil {
-			if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
-				skipped++
-				continue
+	for _, eva := range evas {
+		for _, d := range []string{"departure", "arrival"} {
+			payload, _ := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva, Direction: d})
+			_, err := client.Enqueue(
+				asynq.NewTask(asynqtasks.TypeBoardFetch, payload),
+				asynq.Queue(asynqtasks.QueueDefault),
+				asynq.MaxRetry(3),
+				asynq.Timeout(2*time.Minute),
+			)
+			if err != nil {
+				log.Printf("[seeder] WARN: enqueue %s/%s: %v\n", eva, d, err)
 			}
-			log.Printf("[seeder] WARN: discovery enqueue failed for %q: %v\n", slug, err)
-			continue
 		}
-		enqueued++
 	}
-	log.Printf("[seeder] Seed dispatched: %d enqueued, %d already pending. Exiting.\n", enqueued, skipped)
+	log.Println("[seeder] Full seed dispatched; exiting.")
 }
 
-// --- migrate subcommand (unchanged from the Temporal version) ---
+// --- migrate subcommand ---
 
 func runMigrateSubcommand(args []string) {
 	if len(args) == 0 {
@@ -151,8 +138,7 @@ func runMigrateSubcommand(args []string) {
 		log.Fatalln("POSTGRES_DSN is not set; cannot run migrations")
 	}
 
-	migrationsPath := "db/migrations"
-	m, err := migrate.New("file://"+migrationsPath, dsn)
+	m, err := migrate.New("file://db/migrations", dsn)
 	if err != nil {
 		log.Fatalln("Unable to construct migrate instance:", err)
 	}

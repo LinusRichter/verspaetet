@@ -16,12 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// worker replaces the two Temporal workers (fetch-worker + process-worker).
-// It handles board:fetch and discovery:fetch tasks, reusing the existing
-// activity code unchanged. The pgx pool is shared with the activities.
+// worker handles board:fetch (one station, one direction) and
+// station:resolve (record unresolved route-path names) tasks. It reuses the
+// IRIS client + persist logic directly — no workflow engine involved.
 //
-// DRY_RUN=1 skips the actual board fetch (returns success immediately) —
-// used to test the asynq pipeline without hitting bahnhof.de.
+// DRY_RUN=1 skips the actual IRIS fetches (pipeline testing).
 func main() {
 	redisAddr := envOr("REDIS_ADDR", "redis:6379")
 	dsn := os.Getenv("POSTGRES_DSN")
@@ -37,18 +36,21 @@ func main() {
 	}
 	defer pool.Close()
 
-	fetcher := &activities.Fetch{}
+	iris := &activities.Iris{}
 	processor := &activities.Process{Pool: pool}
 
+	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
+	defer client.Close()
+
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(fetcher, processor, dryRun))
-	mux.HandleFunc(asynqtasks.TypeDiscovery, makeDiscoveryHandler(fetcher, processor, dryRun))
+	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, client, dryRun))
+	mux.HandleFunc(asynqtasks.TypeStationResolve, makeStationResolveHandler(processor))
 
 	srv := asynq.NewServer(asynq.RedisClientOpt{Addr: redisAddr}, asynq.Config{
 		Concurrency: envInt("ASYNQ_CONCURRENCY", 10),
 		Queues: map[string]int{
 			asynqtasks.QueueDiscovery: 10,
-			asynqtasks.QueueDefault:   5,
+			asynqtasks.QueueDefault:  5,
 		},
 	})
 
@@ -58,27 +60,29 @@ func main() {
 	}
 }
 
-// makeBoardFetchHandler fetches one station board and persists the events.
-// It reuses the existing activity logic (Fetch.FetchStationBoard +
-// Process.PersistStopEvent) — no Temporal required.
-func makeBoardFetchHandler(fetcher *activities.Fetch, processor *activities.Process, dryRun bool) func(context.Context, *asynq.Task) error {
+// makeBoardFetchHandler fetches one station board (IRIS) and persists it.
+// Unresolved route-path names become pending_stations rows (discovery).
+func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process, client *asynq.Client, dryRun bool) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
 		var p asynqtasks.BoardFetchPayload
 		if err := json.Unmarshal(t.Payload(), &p); err != nil {
 			return fmt.Errorf("unmarshal payload: %v: %w", err, asynq.SkipRetry)
 		}
+		if p.Eva == "" {
+			return fmt.Errorf("empty eva: %w", asynq.SkipRetry)
+		}
 
 		if dryRun {
-			log.Printf("DRY-RUN board:fetch %s/%s (skipping fetch)", p.Slug, p.Direction)
+			log.Printf("DRY-RUN board:fetch %s/%s (skipping fetch)", p.Eva, p.Direction)
 			return nil
 		}
 
-		result, err := fetcher.FetchStationBoard(ctx, shared.FetchStationBoardInput{
-			Slug:      p.Slug,
+		result, err := iris.FetchStationBoard(ctx, shared.FetchStationBoardInput{
+			Eva:       p.Eva,
 			Direction: p.Direction,
 		})
 		if err != nil {
-			return fmt.Errorf("fetch %s/%s: %w", p.Slug, p.Direction, err)
+			return fmt.Errorf("fetch %s/%s: %w", p.Eva, p.Direction, err)
 		}
 
 		if len(result.Events) == 0 {
@@ -87,74 +91,30 @@ func makeBoardFetchHandler(fetcher *activities.Fetch, processor *activities.Proc
 
 		pr, err := processor.PersistStopEvent(ctx, result.Events)
 		if err != nil {
-			return fmt.Errorf("persist %s/%s: %w", p.Slug, p.Direction, err)
+			return fmt.Errorf("persist %s/%s: %w", p.Eva, p.Direction, err)
 		}
-		_ = pr
+
+		// Discovery: record unresolved names (Fire&Forget-ish — errors are
+		// logged, not retried; the next scrape re-derives the same names).
+		if len(pr.NewStations) > 0 {
+			if err := processor.RecordPendingStations(ctx, pr.NewStations, p.Eva); err != nil {
+				log.Printf("WARN record pending from %s: %v", p.Eva, err)
+			}
+		}
 		return nil
 	}
 }
 
-// makeDiscoveryHandler fetches a station board, persists it, and enqueues
-// discovery tasks for any new stations found. It also schedules the periodic
-// monitor for the station (the new-station monitor is scheduled by the
-// seeder for existing stations, by the discovery handler for new ones).
-func makeDiscoveryHandler(fetcher *activities.Fetch, processor *activities.Process, dryRun bool) func(context.Context, *asynq.Task) error {
+// makeStationResolveHandler records a list of unresolved names for one
+// source station (used when discovery is triggered explicitly).
+func makeStationResolveHandler(processor *activities.Process) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
-		var p asynqtasks.DiscoveryPayload
+		var p asynqtasks.StationResolvePayload
 		if err := json.Unmarshal(t.Payload(), &p); err != nil {
 			return fmt.Errorf("unmarshal payload: %v: %w", err, asynq.SkipRetry)
 		}
-
-		if dryRun {
-			log.Printf("DRY-RUN discovery:fetch %s (skipping fetch)", p.Slug)
-			return nil
-		}
-
-		redisAddr := envOr("REDIS_ADDR", "redis:6379")
-		client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
-		defer client.Close()
-
-		// Fetch + persist both directions, collect new stations.
-		var allNewStations []string
-		for _, direction := range []string{"departure", "arrival"} {
-			result, err := fetcher.FetchStationBoard(ctx, shared.FetchStationBoardInput{
-				Slug:      p.Slug,
-				Direction: direction,
-			})
-			if err != nil {
-				return fmt.Errorf("fetch %s/%s: %w", p.Slug, direction, err)
-			}
-			if len(result.Events) == 0 {
-				continue
-			}
-			for i := range result.Events {
-				result.Events[i].ParentEva = p.ParentEva
-			}
-			pr, err := processor.PersistStopEvent(ctx, result.Events)
-			if err != nil {
-				return fmt.Errorf("persist %s/%s: %w", p.Slug, direction, err)
-			}
-			allNewStations = append(allNewStations, pr.NewStations...)
-		}
-
-		// Enqueue discovery tasks for new stations.
-		for _, slug := range allNewStations {
-			if slug == "" || slug == p.Slug {
-				continue
-			}
-			payload, err := json.Marshal(asynqtasks.DiscoveryPayload{Slug: slug, ParentEva: ""})
-			if err != nil {
-				continue
-			}
-			_, err = client.Enqueue(
-				asynq.NewTask(asynqtasks.TypeDiscovery, payload),
-				asynq.MaxRetry(5),
-				asynq.Queue(asynqtasks.QueueDiscovery),
-				asynq.Unique(time.Hour),
-			)
-			if err != nil {
-				log.Printf("WARN: enqueue discovery for %q: %v", slug, err)
-			}
+		if err := processor.RecordPendingStations(ctx, p.Names, p.SeenFrom); err != nil {
+			return fmt.Errorf("record pending: %w", err)
 		}
 		return nil
 	}
@@ -176,3 +136,5 @@ func envInt(key string, def int) int {
 	}
 	return def
 }
+
+var _ = time.Now

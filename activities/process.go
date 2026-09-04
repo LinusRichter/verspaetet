@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"verspaetet/shared"
@@ -14,29 +13,32 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Process holds the processing activities: PersistStopEvent, GetStationCadence.
-// The Pool field (a *pgxpool.Pool) is set by the process-worker; nil on the
-// fetch-worker where these activities are not called.
+// Process holds the processing activities: PersistStopEvent.
+// The Pool field is set by the worker; nil is invalid.
 type Process struct {
 	Pool *pgxpool.Pool
 }
 
 // ErrUnresolvedStation is a non-retryable error returned by PersistStopEvent
-// when the batch's StationEva is empty and no stations row with the batch's
-// StationSlug exists. Register it in the workflow's RetryPolicy
-// NonRetryableErrorTypes.
+// when the batch's StationEva has no stations row (station not imported).
 type ErrUnresolvedStation struct {
-	Slug string
+	Eva string
 }
 
 func (e *ErrUnresolvedStation) Error() string {
-	return fmt.Sprintf("ErrUnresolvedStation: no eva and no stations row for slug %q", e.Slug)
+	return fmt.Sprintf("ErrUnresolvedStation: no stations row for eva %q", e.Eva)
 }
 
 var _ error = (*ErrUnresolvedStation)(nil)
 
 // PersistStopEvent is the only activity that writes to Postgres. One
-// transaction per batch.
+// transaction per batch. All events in a batch share station+direction.
+//
+// Dedup: a new row is inserted only when something observable changed since
+// the latest snapshot of the same (eva, direction, stop_id) — actual_time,
+// platform, direction_name, via_path, or cancelled. The UNIQUE constraint
+// (station_eva, direction, stop_id, scraped_at) is the DB-level race safety
+// net (ON CONFLICT DO NOTHING).
 func (a *Process) PersistStopEvent(ctx context.Context, events []shared.StopEvent) (shared.PersistResult, error) {
 	if a.Pool == nil {
 		return shared.PersistResult{}, errors.New("PersistStopEvent: Process.Pool is nil")
@@ -52,105 +54,21 @@ func (a *Process) PersistStopEvent(ctx context.Context, events []shared.StopEven
 	defer tx.Rollback(ctx)
 
 	first := events[0]
-	stationSlug := first.StationSlug
 	stationEva := first.StationEva
-	parentEva := first.ParentEva
-
-	// Step 1: resolve the canonical EVA from the stations table (authoritative).
-	var dbEva string
-	lookupErr := tx.QueryRow(ctx, "SELECT eva FROM stations WHERE slug = $1", stationSlug).Scan(&dbEva)
-	switch {
-	case lookupErr == nil:
-		stationEva = dbEva
-	case errors.Is(lookupErr, pgx.ErrNoRows):
-		if stationEva == "" {
-			return shared.PersistResult{}, &ErrUnresolvedStation{Slug: stationSlug}
-		}
-	default:
-		return shared.PersistResult{}, fmt.Errorf("resolve eva: %w", lookupErr)
-	}
-	for i := range events {
-		events[i].StationEva = stationEva
-	}
-
-	// Step 2: upsert station if not yet in the DB.
-	var stationExists bool
-	err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM stations WHERE eva = $1)", stationEva).Scan(&stationExists)
-	if err != nil {
-		return shared.PersistResult{}, fmt.Errorf("station exists check: %w", err)
-	}
-	if !stationExists {
-		name := first.StationName
-		if name == "" {
-			name = stationSlug
-		}
-		_, err = tx.Exec(ctx,
-			`INSERT INTO stations (eva, slug, name, category, discovered_at, discovered_from)
-		     SELECT $1, $2, $3, NULL, NOW(),
-		            CASE WHEN EXISTS (SELECT 1 FROM stations WHERE eva = $4) THEN $4 ELSE NULL END
-		     ON CONFLICT (slug) DO NOTHING`,
-			stationEva, stationSlug, name, parentEva,
-		)
-		if err != nil {
-			return shared.PersistResult{}, fmt.Errorf("station upsert (slug): %w", err)
-		}
-		_, err = tx.Exec(ctx,
-			`INSERT INTO stations (eva, slug, name, category, discovered_at, discovered_from)
-		     SELECT $1, $2, $3, NULL, NOW(),
-		            CASE WHEN EXISTS (SELECT 1 FROM stations WHERE eva = $4) THEN $4 ELSE NULL END
-		     WHERE NOT EXISTS (SELECT 1 FROM stations WHERE slug = $2 AND eva <> $1)
-		     ON CONFLICT (eva) DO NOTHING`,
-			stationEva, stationSlug, name, parentEva,
-		)
-		if err != nil {
-			return shared.PersistResult{}, fmt.Errorf("station upsert (eva): %w", err)
-		}
-	}
-
-	// Step 2b: upsert the lines referenced by this batch.
-	{
-		seen := map[[2]string]struct{}{}
-		for _, ev := range events {
-			key := [2]string{ev.LineLabel, ev.LineCategory}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			if ev.LineLabel == "" {
-				continue
-			}
-			_, err := tx.Exec(ctx,
-				`INSERT INTO lines (line_label, line_category) VALUES ($1, $2)
-		         ON CONFLICT (line_label, line_category) DO NOTHING`,
-				ev.LineLabel, ev.LineCategory,
-			)
-			if err != nil {
-				return shared.PersistResult{}, fmt.Errorf("line upsert (%s/%s): %w", ev.LineLabel, ev.LineCategory, err)
-			}
-		}
-	}
-
-	// Step 2c: resolve notes text → notes_id via the lookup table.
-	for i := range events {
-		if events[i].Notes == "" {
-			continue
-		}
-		var notesID int64
-		err := tx.QueryRow(ctx,
-			`INSERT INTO note_texts (text) VALUES ($1)
-		     ON CONFLICT (text) DO UPDATE SET text = EXCLUDED.text
-		     RETURNING id`,
-			events[i].Notes,
-		).Scan(&notesID)
-		if err != nil {
-			return shared.PersistResult{}, fmt.Errorf("notes upsert: %w", err)
-		}
-		events[i].NotesID = notesID
-	}
-
-	// Step 3: create the scrape_runs row (idempotent).
-	var scrapeRunID int64
 	direction := first.Direction
+
+	// Verify the station exists (imported via StaDa) — non-retryable if not.
+	var eva string
+	err = tx.QueryRow(ctx, "SELECT eva FROM stations WHERE eva = $1", stationEva).Scan(&eva)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return shared.PersistResult{}, &ErrUnresolvedStation{Eva: stationEva}
+		}
+		return shared.PersistResult{}, fmt.Errorf("resolve station: %w", err)
+	}
+
+	// scrape_runs row (idempotent upsert).
+	var scrapeRunID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO scrape_runs (station_eva, direction, scraped_at)
 		 VALUES ($1, $2, date_trunc('second', $3::timestamptz))
@@ -162,124 +80,125 @@ func (a *Process) PersistStopEvent(ctx context.Context, events []shared.StopEven
 		return shared.PersistResult{}, fmt.Errorf("upsert scrape_runs: %w", err)
 	}
 
-	// Step 4: stamp scrape_run_id on every event.
-	for i := range events {
-		events[i].ScrapeRunID = scrapeRunID
-	}
-
-	// Step 5: per-event upsert with the dedup rule.
 	upsertSQL := `
 WITH latest AS (
-  SELECT id, actual_time, platform, planned_platform, notes_id, direction_name
+  SELECT id, actual_time, platform, direction_name, via_path, cancelled
   FROM stop_events
   WHERE station_eva = $1
-    AND direction   = $2
-    AND trip_id      = $3
-    AND trip_date    = $4
+    AND direction    = $2
+    AND stop_id      = $3
   ORDER BY scraped_at DESC
   LIMIT 1
 )
 INSERT INTO stop_events (
-  scrape_run_id, station_eva, direction, line_label, line_category,
-  direction_name, direction_eva, planned_time, actual_time, platform,
-  planned_platform, via_evas, via_slugs, trip_id, trip_date, trip_uuid,
-  notes_id, scraped_at, direction_slug, reason_code, cancelled
+  scrape_run_id, station_eva, direction, stop_id, trip_date,
+  line_category, train_number, owner, trip_kind,
+  direction_name, via_path, planned_time, actual_time,
+  planned_platform, platform, cancelled, scraped_at
 )
-  SELECT $5, $1, $2, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $3, $4, $16, $17, $18, $19, $20, $21
+  SELECT $4, $1, $2, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
   WHERE NOT EXISTS (
     SELECT 1 FROM latest
-    WHERE latest.actual_time      IS NOT DISTINCT FROM $11
-      AND latest.platform         IS NOT DISTINCT FROM $12
-      AND latest.planned_platform IS NOT DISTINCT FROM $13
-      AND latest.notes_id         IS NOT DISTINCT FROM $17
-      AND latest.direction_name   IS NOT DISTINCT FROM $8
+    WHERE latest.actual_time    IS NOT DISTINCT FROM $13
+      AND latest.platform       IS NOT DISTINCT FROM $15
+      AND latest.direction_name IS NOT DISTINCT FROM $10
+      AND latest.via_path       IS NOT DISTINCT FROM $11
+      AND latest.cancelled      IS NOT DISTINCT FROM $16
   )
-  ON CONFLICT (station_eva, direction, trip_id, trip_date, scraped_at) DO NOTHING`
+  ON CONFLICT (station_eva, direction, stop_id, scraped_at) DO NOTHING`
+
 	for _, ev := range events {
-		if ev.LineLabel == "" {
-			log.Printf("WARN PersistStopEvent: skipping event with empty LineLabel (direction=%s direction_name=%q planned_time=%s trip_id=%q)",
-				ev.Direction, ev.DirectionName, ev.PlannedTime.Format(time.RFC3339), ev.TripID)
-			continue
+		var tripDate interface{}
+		if ev.TripDate != nil {
+			tripDate = *ev.TripDate
 		}
 		var actualTime interface{}
 		if ev.ActualTime != nil {
 			actualTime = *ev.ActualTime
 		}
-		var tripDate interface{}
-		if ev.TripDate != nil {
-			tripDate = *ev.TripDate
+		viaPath := ev.ViaPath
+		if viaPath == nil {
+			viaPath = []string{}
 		}
-		viaEvas := ev.ViaEvas
-		if viaEvas == nil {
-			viaEvas = []string{}
-		}
-		viaSlugs := ev.ViaSlugs
-		if viaSlugs == nil {
-			viaSlugs = []string{}
-		}
-		var platform, plannedPlatform interface{}
-		if ev.Platform != "" {
-			platform = ev.Platform
-		}
+		var plannedPlatform interface{}
 		if ev.PlannedPlatform != "" {
 			plannedPlatform = ev.PlannedPlatform
 		}
-		var directionSlug interface{}
-		if ev.DirectionSlug != "" {
-			directionSlug = ev.DirectionSlug
+		var platform interface{}
+		if ev.Platform != "" {
+			platform = ev.Platform
 		}
-		var directionEva interface{}
-		if ev.DirectionEva != "" {
-			directionEva = ev.DirectionEva
+		var trainNumber interface{}
+		if ev.TrainNumber != "" {
+			trainNumber = ev.TrainNumber
 		}
-		var notesID interface{}
-		if ev.NotesID != 0 {
-			notesID = ev.NotesID
+		var owner interface{}
+		if ev.Owner != "" {
+			owner = ev.Owner
 		}
 		_, err := tx.Exec(ctx, upsertSQL,
-			stationEva, ev.Direction, ev.TripID, tripDate,
-			scrapeRunID, ev.LineLabel, ev.LineCategory,
-			ev.DirectionName, directionEva, ev.PlannedTime, actualTime, platform,
-			plannedPlatform, viaEvas, viaSlugs, ev.TripUUID, notesID, ev.ScrapedAt,
-			directionSlug, mapReason(ev.Notes), ev.Cancelled,
+			stationEva, ev.Direction, ev.StopID,
+			scrapeRunID, tripDate,
+			ev.LineCategory, trainNumber, owner, ev.TripKind,
+			ev.DirectionName, viaPath, ev.PlannedTime, actualTime,
+			plannedPlatform, platform, ev.Cancelled, ev.ScrapedAt,
 		)
 		if err != nil {
-			return shared.PersistResult{}, fmt.Errorf("upsert stop_event (trip_id=%s): %w", ev.TripID, err)
+			return shared.PersistResult{}, fmt.Errorf("upsert stop_event (stop_id=%s): %w", ev.StopID, err)
 		}
 	}
 
-	// Collect NewStations: via/direction slugs not yet in stations.slug.
-	slugSet := map[string]struct{}{}
+	// Collect unresolved route-path names for discovery.
+	nameSet := map[string]struct{}{}
 	for _, ev := range events {
-		if ev.DirectionSlug != "" {
-			slugSet[ev.DirectionSlug] = struct{}{}
+		if ev.DirectionName != "" {
+			nameSet[ev.DirectionName] = struct{}{}
 		}
-		for _, s := range ev.ViaSlugs {
-			slugSet[s] = struct{}{}
+		for _, n := range ev.ViaPath {
+			if n != "" {
+				nameSet[n] = struct{}{}
+			}
 		}
 	}
-	candidateSlugs := make([]string, 0, len(slugSet))
-	for s := range slugSet {
-		candidateSlugs = append(candidateSlugs, s)
+	names := make([]string, 0, len(nameSet))
+	for n := range nameSet {
+		names = append(names, n)
 	}
 	newStations := make([]string, 0)
-	if len(candidateSlugs) > 0 {
+	if len(names) > 0 {
+		// Which names already exist as stations?
 		knownRows, err := tx.Query(ctx,
-			`SELECT slug FROM stations WHERE slug = ANY($1)`, candidateSlugs)
+			`SELECT name FROM stations WHERE name = ANY($1)`, names)
 		if err != nil {
-			return shared.PersistResult{}, fmt.Errorf("query known slugs: %w", err)
+			return shared.PersistResult{}, fmt.Errorf("query known names: %w", err)
 		}
 		known := map[string]struct{}{}
 		for knownRows.Next() {
-			var s string
-			if err := knownRows.Scan(&s); err == nil {
-				known[s] = struct{}{}
+			var n string
+			if err := knownRows.Scan(&n); err == nil {
+				known[n] = struct{}{}
 			}
 		}
 		knownRows.Close()
-		for _, s := range candidateSlugs {
-			if _, ok := known[s]; !ok {
-				newStations = append(newStations, s)
+		// Which names are already pending (seen before)?
+		pendingRows, err := tx.Query(ctx,
+			`SELECT name FROM pending_stations WHERE name = ANY($1)`, names)
+		if err != nil {
+			return shared.PersistResult{}, fmt.Errorf("query pending names: %w", err)
+		}
+		pending := map[string]struct{}{}
+		for pendingRows.Next() {
+			var n string
+			if err := pendingRows.Scan(&n); err == nil {
+				pending[n] = struct{}{}
+			}
+		}
+		pendingRows.Close()
+		for _, n := range names {
+			_, isKnown := known[n]
+			_, isPending := pending[n]
+			if !isKnown && !isPending {
+				newStations = append(newStations, n)
 			}
 		}
 	}
@@ -294,68 +213,26 @@ INSERT INTO stop_events (
 	}, nil
 }
 
-// GetStationCadence is a tiny read-only DB activity. Returns Cadence=0 when
-// the station row is missing or cadence_override is NULL.
-func (a *Process) GetStationCadence(ctx context.Context, in shared.GetStationCadenceInput) (shared.GetStationCadenceResult, error) {
+// RecordPendingStations inserts unseen route-path names into pending_stations
+// so the next StaDa refresh can try to resolve them.
+func (a *Process) RecordPendingStations(ctx context.Context, names []string, seenFrom string) error {
 	if a.Pool == nil {
-		return shared.GetStationCadenceResult{}, errors.New("GetStationCadence: Process.Pool is nil")
+		return errors.New("RecordPendingStations: Process.Pool is nil")
 	}
-	var cadence *time.Duration
-	err := a.Pool.QueryRow(ctx,
-		"SELECT cadence_override FROM stations WHERE slug = $1", in.StationSlug,
-	).Scan(&cadence)
+	if len(names) == 0 {
+		return nil
+	}
+	_, err := a.Pool.Exec(ctx,
+		`INSERT INTO pending_stations (name, seen_from)
+		 SELECT n, $2 FROM unnest($1::text[]) AS n
+		 ON CONFLICT (name) DO NOTHING`,
+		names, seenFrom,
+	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return shared.GetStationCadenceResult{Cadence: 0}, nil
-		}
-		return shared.GetStationCadenceResult{}, fmt.Errorf("get cadence: %w", err)
+		return fmt.Errorf("record pending stations: %w", err)
 	}
-	if cadence == nil {
-		return shared.GetStationCadenceResult{Cadence: 0}, nil
-	}
-	return shared.GetStationCadenceResult{Cadence: *cadence}, nil
+	return nil
 }
 
-// mapReason maps free-text notes to the DB's structured delay-reason taxonomy.
-// Returns "" when no known reason matches.
-func mapReason(notes string) string {
-	n := strings.ToLower(notes)
-	switch {
-	case strings.Contains(n, "notarzteinsatz"), strings.Contains(n, "personenunfall"):
-		return "MEDICAL_EMERGENCY"
-	case strings.Contains(n, "polizeieinsatz"):
-		return "POLICE_ACTIVITY"
-	case strings.Contains(n, "streik"):
-		return "STRIKE"
-	case strings.Contains(n, "bauarbeiten"), strings.Contains(n, "baustelle"):
-		return "CONSTRUCTION"
-	case strings.Contains(n, "signalstörung"):
-		return "TECHNICAL_PROBLEM_SIGNAL"
-	case strings.Contains(n, "weichenstörung"):
-		return "TECHNICAL_PROBLEM_SWITCH"
-	case strings.Contains(n, "oberleitungsstörung"), strings.Contains(n, "oberleitung"):
-		return "TECHNICAL_PROBLEM_OVERHEAD"
-	case strings.Contains(n, "streckenstörung"), strings.Contains(n, "strecke") && strings.Contains(n, "beeinträchtigt"):
-		return "TECHNICAL_PROBLEM_RAILWAY_SECTION"
-	case strings.Contains(n, "technische störung am zug"), strings.Contains(n, "fahrzeugstörung"):
-		return "TECHNICAL_PROBLEM_VEHICLE"
-	case strings.Contains(n, "technische störung"), strings.Contains(n, "betriebsstörung"):
-		return "TECHNICAL_PROBLEM_OTHER"
-	case strings.Contains(n, "verspätung eines vorausfahrenden"),
-		strings.Contains(n, "verspätung eines vorherigen"),
-		strings.Contains(n, "verspätung aus vorheriger"):
-		return "PREVIOUS_TRAIN_DELAY"
-	case strings.Contains(n, "verzögerung im betriebsablauf"), strings.Contains(n, "betriebsablauf"):
-		return "OPERATIONAL_DELAY"
-	case strings.Contains(n, "tier auf der strecke"), strings.Contains(n, "tierauf"):
-		return "ANIMAL_ON_TRACK"
-	case strings.Contains(n, "hitze"):
-		return "WEATHER_HEAT"
-	case strings.Contains(n, "unwetter"):
-		return "WEATHER_STORM"
-	case strings.Contains(n, "winterwitterung"):
-		return "WEATHER_WINTER"
-	default:
-		return ""
-	}
-}
+var _ = log.Printf
+var _ = time.Now

@@ -8,12 +8,13 @@ interface Props {
   lineLabel: string
   stationName: string
   onSelectStation: (slug: string, name: string) => void
-  onSelectTrip: (uuid: string, date: string | null) => void
+  onSelectTrip: (stopId: string) => void
 }
 
 const catColors: Record<string, string> = {
-  fern: '#4a9eff', regio: '#4aff4a', s_bahn: '#ff9a4a', u_bahn: '#bb4aff',
-  bus: '#888', ersatz: '#ff4a4a', unknown: '#555',
+  ICE: '#4a9eff', IC: '#4a9eff', TGV: '#4a9eff', RJ: '#4a9eff',
+  RE: '#4aff4a', RB: '#4aff4a', ME: '#4aff4a',
+  S: '#ff9a4a',
 }
 
 function fmtTime(iso: string): string {
@@ -29,8 +30,8 @@ function fmtFull(iso: string): string {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 }
-function fmtDelay(s: number): string {
-  if (s === 0) return ''
+function fmtDelay(s: number | null): string {
+  if (s === null || s === 0) return ''
   const m = Math.floor(s / 60)
   const sec = s % 60
   return `+${m}m${sec > 0 ? ` ${sec}s` : ''}`
@@ -49,38 +50,47 @@ export function EventTable({ slug, lineLabel, stationName, onSelectStation, onSe
     fetchEvents(slug, lineLabel).then(e => { setEvents(e); setLoading(false) }).catch(console.error)
   }, [slug, lineLabel])
 
-  const nameFor = (s: string): string => {
-    const st = stations.find(x => x.slug === s)
-    return st ? st.name : s
+  const nameFor = (name: string): string => {
+    // Via path entries are station NAMES (not slugs); look up by name.
+    const st = stations.find(x => x.name === name)
+    return st ? st.name : name
+  }
+  const slugForName = (name: string): string | null => {
+    const st = stations.find(x => x.name === name)
+    return st ? st.slug : null
   }
 
   const first = events[0]
-  const routeEl = first && (first.direction_slug || first.direction_name || (first.via_slugs && first.via_slugs.length)) ? (
+  const routeEl = first && (first.direction_name || (first.via_path && first.via_path.length)) ? (
     <div className="route-bar">
       <span className="route-station">{stationName}</span>
       <span className="route-arrow">→</span>
       <span className="line-badge" style={{ background: catColors[first.line_category] || '#555' }}>
-        {first.line_label}
+        {first.line_category}{first.train_number ? ` ${first.train_number}` : ''}
       </span>
       <span className="route-arrow">→</span>
-      {first.via_slugs && first.via_slugs.map((vs, i) => (
+      {first.via_path && first.via_path.map((vs, i) => (
         <span key={vs + i} className="route-seg">
           <a
             className="route-link"
-            onClick={() => onSelectStation(vs, nameFor(vs))}
+            onClick={() => { const s = slugForName(vs); if (s) onSelectStation(s, nameFor(vs)) }}
             title={`Öffne ${nameFor(vs)}`}
           >{nameFor(vs)}</a>
           <span className="route-arrow">›</span>
         </span>
       ))}
-      {first.direction_slug && first.direction_name ? (
-        <a
-          className="route-link route-dest"
-          onClick={() => onSelectStation(first.direction_slug!, nameFor(first.direction_slug!))}
-          title={`Öffne ${first.direction_name} (Zielbahnhof)`}
-        >{first.direction_name}</a>
+      {first.direction_name ? (
+        first.via_path && first.via_path.length ? (
+          <span className="route-dest">{first.direction_name}</span>
+        ) : (
+          <a
+            className="route-link route-dest"
+            onClick={() => { const s = slugForName(first.direction_name!); if (s) onSelectStation(s, first.direction_name!) }}
+            title={`Öffne ${first.direction_name} (Zielbahnhof)`}
+          >{first.direction_name}</a>
+        )
       ) : (
-        <span className="route-dest">{first.direction_name || '—'}</span>
+        <span className="route-dest">—</span>
       )}
     </div>
   ) : null
@@ -100,11 +110,10 @@ export function EventTable({ slug, lineLabel, stationName, onSelectStation, onSe
             <tr>
               <th><Tip tip="Abfahrt (→) oder Ankunft (←). Zielbahnhof (bei Abfahrt) bzw. Herkunft (bei Ankunft).">Dir</Tip></th>
               <th><Tip tip="Die geplante Zeit laut Fahrplan.">Planned</Tip></th>
-              <th><Tip tip="Die tatsächliche/aktualisierte Zeit. — = noch keine Abweichung gemeldet.">Actual</Tip></th>
-              <th><Tip tip="Verspätung = tatsächlich minus geplant (Sekunden). Rot wenn > 0.">Delay</Tip></th>
+              <th><Tip tip="Die aktuelle Prognose/Ist-Zeit. — = noch keine Abweichung gemeldet.">Actual</Tip></th>
+              <th><Tip tip="Verspätung = aktuell minus geplant (Sekunden). Rot wenn > 0.">Delay</Tip></th>
               <th><Tip tip="Gleis. Orange 'was X' = Gleiswechsel (geplant war ein anderes Gleis).">Plat</Tip></th>
-              <th><Tip tip="Hinweise zur Fahrt (Bauarbeiten, Ersatzverkehr, Fahrradmitnahme…).">Notes</Tip></th>
-              <th><Tip tip="Wann der Crawler diese Zeile von der Tafel gelesen hat. Der Abstand zwischen Scraped-Zeilen zeigt, wie sich die Verspätung entwickelt.">Scraped</Tip></th>
+              <th><Tip tip="Wann der Crawler diese Zeile gelesen hat. Der Abstand zwischen Scraped-Zeilen zeigt, wie sich die Verspätung entwickelt.">Scraped</Tip></th>
               <th><Tip tip="Klick öffnet diese Fahrt über ALLE Bahnhöfe (geplant/tatsächlich an jedem Halt).">Trip</Tip></th>
             </tr>
           </thead>
@@ -118,13 +127,17 @@ export function EventTable({ slug, lineLabel, stationName, onSelectStation, onSe
                 </td>
                 <td><Tip tip={`Geplant: ${fmtFull(e.planned_time)}`}>{fmtTime(e.planned_time)}</Tip></td>
                 <td>{e.actual_time
-                  ? <Tip tip={`Tatsächlich: ${fmtFull(e.actual_time)}`}>{fmtTime(e.actual_time)}</Tip>
+                  ? <Tip tip={`Aktuell: ${fmtFull(e.actual_time)}`}>{fmtTime(e.actual_time)}</Tip>
                   : '—'}</td>
-                <td className={e.delay_s > 0 ? 'delayed' : ''}>
-                  <Tip tip={e.delay_s > 0
-                    ? `${Math.floor(e.delay_s / 60)}m ${e.delay_s % 60}s Verspätung`
-                    : 'Pünktlich (keine Abweichung gemeldet)'}>
-                    {fmtDelay(e.delay_s)}
+                <td className={(e.delay_s ?? 0) > 0 ? 'delayed' : ''}>
+                  <Tip tip={e.cancelled
+                    ? 'Zug fällt aus'
+                    : e.delay_s === null
+                      ? 'Keine Abweichung gemeldet'
+                      : (e.delay_s > 0
+                        ? `${Math.floor(e.delay_s / 60)}m ${e.delay_s % 60}s Verspätung`
+                        : 'Pünktlich')}>
+                    {e.cancelled ? <span className="delayed">fällt aus</span> : fmtDelay(e.delay_s)}
                   </Tip>
                 </td>
                 <td>
@@ -137,18 +150,13 @@ export function EventTable({ slug, lineLabel, stationName, onSelectStation, onSe
                     )}
                   </Tip>
                 </td>
-                <td className="notes-cell" title={e.notes || ''}>
-                  <Tip tip={e.notes || 'Keine Hinweise'}>{e.notes ? e.notes.split('\u23ce')[0].slice(0, 50) : ''}</Tip>
-                </td>
                 <td className="muted"><Tip tip={`Gelesen am ${fmtFull(e.scraped_at)}`}>{fmtTime(e.scraped_at)}</Tip></td>
                 <td>
-                  {e.trip_uuid ? (
-                    <a
-                      className="trip-link"
-                      onClick={() => onSelectTrip(e.trip_uuid, e.trip_date)}
-                      title={`Öffne die Fahrt ${e.trip_uuid.slice(0, 8)} über alle Bahnhöfe`}
-                    >Fahrt</a>
-                  ) : '—'}
+                  <a
+                    className="trip-link"
+                    onClick={() => onSelectTrip(e.stop_id)}
+                    title="Öffne die Fahrt über alle Bahnhöfe"
+                  >Fahrt</a>
                 </td>
               </tr>
             ))}

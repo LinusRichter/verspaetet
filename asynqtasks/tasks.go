@@ -2,8 +2,8 @@ package asynqtasks
 
 // Task type names.
 const (
-	TypeBoardFetch = "board:fetch"
-	TypeDiscovery   = "discovery:fetch"
+	TypeBoardFetch     = "board:fetch"
+	TypeStationResolve = "station:resolve"
 )
 
 // Queue names.
@@ -14,13 +14,12 @@ const (
 
 // BoardFetchPayload is the payload for a board fetch + persist task.
 type BoardFetchPayload struct {
-	Slug      string `json:"slug"`
+	Eva       string `json:"eva"`
 	Direction string `json:"direction"` // "departure" | "arrival"
 }
 
-// DiscoveryPayload is the payload for a discovery task (fetch board,
-// persist, discover new stations, schedule monitors).
-type DiscoveryPayload struct {
-	Slug      string `json:"slug"`
-	ParentEva string `json:"parent_eva"`
+// StationResolvePayload records unresolved route-path names.
+type StationResolvePayload struct {
+	Names    []string `json:"names"`
+	SeenFrom string    `json:"seen_from"`
 }
