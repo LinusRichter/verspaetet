@@ -36,15 +36,45 @@ type StadaGeoPoint struct {
 	Coordinates []float64 `json:"coordinates"`
 }
 
-// stadaWrapper handles the {"Station": {...}} envelope of the live API.
-type stadaWrapper struct {
-	Station StadaStation `json:"Station"`
-}
-
-// stadaResponse is the /stations envelope.
+// stadaResponse is the /stations envelope. The live API returns stations
+// directly in result[]; some environments/historic versions wrap each item
+// in {"Station": {...}} — we decode both shapes via a raw-first pass.
 type stadaResponse struct {
 	Total  int64           `json:"total"`
-	Result []stadaWrapper  `json:"result"`
+	Result []stadaItem     `json:"result"`
+}
+
+// stadaItem decodes EITHER the bare station object OR the {"Station": {...}}
+// envelope (RawStation is nil for the bare shape).
+type stadaItem struct {
+	RawStation *StadaStation `json:"Station"`
+	// Embedded bare shape: all StadaStation fields inline.
+	StadaStation
+}
+
+// UnmarshalJSON decodes both envelope variants into StadaStation.
+func (it *stadaItem) UnmarshalJSON(data []byte) error {
+	// Try the wrapped shape first: an object whose ONLY relevant key is "Station".
+	var wrapped struct {
+		Station *StadaStation `json:"Station"`
+	}
+	if err := json.Unmarshal(data, &wrapped); err == nil && wrapped.Station != nil {
+		it.RawStation = wrapped.Station
+		it.StadaStation = *wrapped.Station
+		return nil
+	}
+	// Bare shape: the object IS the station.
+	var bare StadaStation
+	if err := json.Unmarshal(data, &bare); err != nil {
+		return err
+	}
+	it.StadaStation = bare
+	return nil
+}
+
+// station returns the decoded station value.
+func (it stadaItem) station() StadaStation {
+	return it.StadaStation
 }
 
 // stadaBaseURL returns the StaDa base (overridable for tests).
@@ -94,8 +124,8 @@ func FetchStadaStations(ctx context.Context) ([]StadaStation, error) {
 		return nil, fmt.Errorf("stada decode: %w", err)
 	}
 	out := make([]StadaStation, 0, len(r.Result))
-	for _, w := range r.Result {
-		out = append(out, w.Station)
+	for _, it := range r.Result {
+		out = append(out, it.station())
 	}
 	return out, nil
 }

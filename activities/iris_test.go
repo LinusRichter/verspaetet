@@ -148,6 +148,23 @@ func TestIrisEventToStopEvent(t *testing.T) {
 	}
 }
 
+func TestSplitLineLabel(t *testing.T) {
+	tests := []struct{ in, cat, num string }{
+		{"RB34", "RB", "34"},
+		{"ICE577", "ICE", "577"},
+		{"S8", "S", "8"},
+		{"RE60", "RE", "60"},
+		{"34", "", "34"},   // pure digits — no category
+		{"MEX90212a", "MEX", "90212a"},
+	}
+	for _, tt := range tests {
+		cat, num := splitLineLabel(tt.in)
+		if cat != tt.cat || num != tt.num {
+			t.Errorf("splitLineLabel(%q) = (%q, %q), want (%q, %q)", tt.in, cat, num, tt.cat, tt.num)
+		}
+	}
+}
+
 func mustParseUTC(t *testing.T, iris string) time.Time {
 	t.Helper()
 	tm, err := parseIrisTime(iris)

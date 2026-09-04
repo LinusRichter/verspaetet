@@ -86,6 +86,23 @@ type IrisEvent struct {
 	L    string `xml:"l,attr"`    // line indicator (e.g. S-Bahn line)
 }
 
+// splitLineLabel splits an IRIS line indicator (the ar/dp `l` attribute,
+// e.g. "RB34", "ICE577", "S8", "RE60") into (category, number). The
+// category is the leading alphabetic prefix; the number is the trailing
+// alphanumeric part. Pure digits (rare) yield ("", label).
+func splitLineLabel(l string) (string, string) {
+	i := 0
+	for i < len(l) && !isDigit(l[i]) {
+		i++
+	}
+	if i == 0 || i == len(l) {
+		return "", l
+	}
+	return l[:i], l[i:]
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+
 // ── IRIS client ───────────────────────────────────────────────────────────
 
 // Iris holds the IRIS Timetables API client. Base URL and credentials are
@@ -159,22 +176,30 @@ func (a *Iris) FetchStationBoard(ctx context.Context, in shared.FetchStationBoar
 		return shared.FetchStationBoardResult{}, err
 	}
 
-	// Planned slice for the current hour — catches unchanged trains.
+	// Planned slices: current hour + next hour (covers midnight rollover
+	// and trips departing early in the following hour). Past-hour trips
+	// with extreme delays may still lack a line label — that is an honest
+	// representation of the source (tl only exists in the trip's own hour).
 	now := time.Now().In(berlin)
-	planPath := fmt.Sprintf("/plan/%s/%s/%s", in.Eva, now.Format("060102"), now.Format("15"))
-	plan, err := irisGet(ctx, planPath)
-	if err != nil {
-		// A 404 from /plan (hour without traffic) is not fatal — fchg alone is fine.
-		plan = &Timetable{}
+	plans := []*Timetable{}
+	for _, offset := range []time.Duration{0, time.Hour} {
+		h := now.Add(offset)
+		plan, err := irisGet(ctx, fmt.Sprintf("/plan/%s/%s/%s", in.Eva, h.Format("060102"), h.Format("15")))
+		if err != nil {
+			plan = &Timetable{} // hour without traffic / 404 — not fatal
+		}
+		plans = append(plans, plan)
 	}
 
-	// Merge by stop id: plan provides the baseline (pt/pp/ppth/pde), fchg
-	// overlays the changed fields (ct/cp/cpth/cs/cde). An fchg <s> replaces
-	// the plan entry, but per-event we fill planned fields from the plan
-	// twin so a change payload without pt still yields a planned time.
+	// Merge: plan provides the baseline (tl/pt/pp/ppth/pde), fchg overlays
+	// the changed fields (ct/cp/cpth/cs/cde). An fchg <s> replaces the plan
+	// entry, but per-event we fill planned fields from the plan twin so a
+	// change payload without pt still yields a planned time.
 	merged := map[string]*IrisStop{}
-	for i := range plan.Stops {
-		merged[plan.Stops[i].ID] = &plan.Stops[i]
+	for _, plan := range plans {
+		for i := range plan.Stops {
+			merged[plan.Stops[i].ID] = &plan.Stops[i]
+		}
 	}
 	for i := range fchg.Stops {
 		f := &fchg.Stops[i]
@@ -279,6 +304,13 @@ func irisEventToStopEvent(stop *IrisStop, ev *IrisEvent, eva, direction string, 
 		Owner:        stop.TL.O,
 		TripKind:     stop.TL.T,
 		ScrapedAt:    scrapedAt,
+	}
+
+	// Fallback for fchg-only stops without <tl>: the per-event line
+	// indicator (l, e.g. "RB34", "ICE577", "S8") carries the same info.
+	// Parse it as category-prefix + trailing number/digits.
+	if se.LineCategory == "" && ev.L != "" {
+		se.LineCategory, se.TrainNumber = splitLineLabel(ev.L)
 	}
 
 	// Trip date = the YYMMddHHmm part of the stop id
