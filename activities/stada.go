@@ -58,17 +58,27 @@ func stadaBaseURL() string {
 var stadaHTTP = &http.Client{Timeout: 60 * time.Second}
 
 // FetchStadaStations queries all active stations (category 1-7) in ONE call.
+// Auth uses the StaDa key pair (STADA_CLIENT_ID/STADA_API_KEY), falling back
+// to the IRIS pair when the StaDa-specific envs are unset (single-subscription setups).
 func FetchStadaStations(ctx context.Context) ([]StadaStation, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		stadaBaseURL()+"/stations?limit=10000&category=1-7", nil)
 	if err != nil {
 		return nil, err
 	}
-	if id := os.Getenv("IRIS_CLIENT_ID"); id != "" {
-		req.Header.Set("DB-Client-ID", id)
+	clientID := os.Getenv("STADA_CLIENT_ID")
+	if clientID == "" {
+		clientID = os.Getenv("IRIS_CLIENT_ID")
 	}
-	if key := os.Getenv("IRIS_API_KEY"); key != "" {
-		req.Header.Set("DB-Api-Key", key)
+	apiKey := os.Getenv("STADA_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("IRIS_API_KEY")
+	}
+	if clientID != "" {
+		req.Header.Set("DB-Client-ID", clientID)
+	}
+	if apiKey != "" {
+		req.Header.Set("DB-Api-Key", apiKey)
 	}
 	resp, err := stadaHTTP.Do(req)
 	if err != nil {

@@ -1,11 +1,11 @@
-# docker-compose.yml — verspaetet production stack (asynq + IRIS).
+﻿# docker-compose.yml â€” verspaetet production stack (asynq + IRIS).
 #
 # Services: postgres (data), redis (asynq job queue), asynqmon (job UI),
 # migrate (one-shot schema), stationimport (one-shot StaDa station universe),
 # worker (IRIS board fetch + persist), scheduler (30-min tick loop),
 # api (Web UI + JSON).
 #
-# Data source: DB Timetables API (IRIS) — free plan, 60 req/min.
+# Data source: DB Timetables API (IRIS) â€” free plan, 60 req/min.
 # Auth: DB-Client-ID + DB-Api-Key headers (both from developers.deutschebahn.com).
 x-logging: &default-logging
   driver: json-file
@@ -45,7 +45,7 @@ services:
     volumes:
       - verspaetet_redis:/data
 
-  # asynqmon — web UI for the asynq job queue.
+  # asynqmon â€” web UI for the asynq job queue.
   asynqmon:
     image: hibiken/asynqmon:latest
     restart: unless-stopped
@@ -72,7 +72,7 @@ services:
        "postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable", "up"]
     restart: "no"
 
-  # stationimport (one-shot): StaDa → stations universe (all ~5400 active
+  # stationimport (one-shot): StaDa â†’ stations universe (all ~5400 active
   # stations with EVA, name, lat/lon, category). Also resolves pending
   # discovery names. Re-run any time; StaDa terms allow ~1 call/day.
   # CSV fallback: command: ["/app/bin/stationimport", "--csv=/stations.csv"]
@@ -90,6 +90,8 @@ services:
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
       - IRIS_CLIENT_ID=${IRIS_CLIENT_ID}
       - IRIS_API_KEY=${IRIS_API_KEY}
+      - STADA_CLIENT_ID=${STADA_CLIENT_ID}
+      - STADA_API_KEY=${STADA_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,7 +99,7 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  # worker — handles board:fetch tasks (IRIS /plan + /fchg → persist).
+  # worker â€” handles board:fetch tasks (IRIS /plan + /fchg â†’ persist).
   worker:
     build:
       context: .
@@ -124,7 +126,7 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # scheduler — enqueues board:fetch for every station whose fetch_offset
+  # scheduler â€” enqueues board:fetch for every station whose fetch_offset
   # matches the current minute slot (30-min cadence, ~180 stations/minute).
   scheduler:
     build:
