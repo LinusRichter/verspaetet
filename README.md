@@ -97,4 +97,8 @@ docker-compose.yml
 
 ## License
 
-MIT
+The code of this repository is licensed under **MIT**.
+
+The **collected dataset** (delay snapshots of Deutsche Bahn trains) is derived from data provided by the **Deutsche Bahn Timetables API (IRIS)** and the **DB StaDa API**, which Deutsche Bahn publishes under the [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) license. Any published dataset will therefore be released under CC BY 4.0 with attribution:
+
+> Daten: Deutsche Bahn (Timetables API & StaDa API), Lizenz: CC BY 4.0 — verspaetet (github.com/LinusRichter/verspaetet)
