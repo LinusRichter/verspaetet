@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"verspaetet/shared"
@@ -148,58 +148,79 @@ func irisGet(ctx context.Context, path string) (*Timetable, error) {
 	return &tt, nil
 }
 
-// FetchStationBoard fetches one station's board for one direction by merging
-// /fchg (changes; carries actual times, cancellations, platforms) with the
-// planned timetable from /fchg itself (change payloads include planned
-// fields for added stops) — /plan is NOT needed because fchg covers "all
-// known changes from now onward"; on-time trains that never change simply
-// never appear in fchg, so the caller polls /fchg only. To also observe
-// unchanged trains we additionally fetch the current hour's /plan.
-//
-// In practice: we fetch /fchg/{eva} (complete picture of everything that
-// deviates or is about to run with deviations) plus /plan for the current
-// hour slice, merge by stop id, and emit one StopEvent per ar/dp matching
-// the requested direction.
-func (a *Iris) FetchStationBoard(ctx context.Context, in shared.FetchStationBoardInput) (shared.FetchStationBoardResult, error) {
-	if in.Eva == "" {
-		return shared.FetchStationBoardResult{}, fmt.Errorf("ErrInvalidInput: Eva is empty")
+// planCache caches /plan slices per (eva, day, hour). Plan data is static
+// (generated hours in advance, never contains changes), so re-fetching the
+// same slice within its hour is pure waste. Bounded: entries expire when the
+// hour passes; a janitor drops stale keys opportunistically.
+var planCache sync.Map // map[string]*Timetable
+
+func planCacheKey(eva, dayHour string) string { return eva + ":" + dayHour }
+
+// janitorPlanCache removes entries whose hour has passed. Called
+// opportunistically (not on every fetch) to keep the map small.
+func janitorPlanCache(nowDayHour string) {
+	planCache.Range(func(k, _ interface{}) bool {
+		if s, ok := k.(string); ok {
+			if p := strings.LastIndex(s, ":"); p >= 0 && s[p+1:] != nowDayHour[:len(nowDayHour)] {
+				// cheap prefix check: hour string differs -> stale
+				planCache.Delete(k)
+			}
+		}
+		return true
+	})
+}
+
+// fetchPlanHour returns the cached /plan slice for one (eva, hour) or
+// fetches it. Errors fall back to an empty timetable (hour without traffic
+// is not fatal).
+func fetchPlanHour(ctx context.Context, eva string, h time.Time) (*Timetable, error) {
+	dayHour := h.Format("06010215")
+	key := planCacheKey(eva, dayHour)
+	if v, ok := planCache.Load(key); ok {
+		return v.(*Timetable), nil
 	}
-	if in.Direction != "departure" && in.Direction != "arrival" {
-		return shared.FetchStationBoardResult{}, fmt.Errorf("ErrInvalidInput: Direction %q must be departure or arrival", in.Direction)
+	tt, err := irisGet(ctx, fmt.Sprintf("/plan/%s/%s/%s", eva, h.Format("060102"), h.Format("15")))
+	if err != nil {
+		return &Timetable{}, err
+	}
+	planCache.Store(key, tt)
+	if h.Minute()%15 == 0 { // occasional cleanup
+		go janitorPlanCache(dayHour)
+	}
+	return tt, nil
+}
+
+// FetchStationBoard fetches one station's COMPLETE board (both directions)
+// in a single pass: 1× /fchg (live changes) + 1× /plan for the current hour
+// (static baseline, cached per hour). Arrivals and departures are split
+// client-side — IRIS returns both in the same documents, so one task per
+// station loses NOTHING versus per-direction tasks while halving the requests.
+//
+// Request budget per station: 1 fchg per cycle + 1 plan per HOUR (cache hit
+// on repeated cycles within the same hour).
+func (a *Iris) FetchStationBoard(ctx context.Context, eva string) (shared.FetchStationBoardResult, error) {
+	if eva == "" {
+		return shared.FetchStationBoardResult{}, fmt.Errorf("ErrInvalidInput: Eva is empty")
 	}
 
 	scrapedAt := time.Now().UTC()
 
-	// Recent+future changes: /fchg gives the complete deviation picture.
-	fchg, err := irisGet(ctx, "/fchg/"+in.Eva)
+	// Live + future changes: /fchg is the complete deviation picture.
+	fchg, err := irisGet(ctx, "/fchg/"+eva)
 	if err != nil {
 		return shared.FetchStationBoardResult{}, err
 	}
 
-	// Planned slices: current hour + next hour (covers midnight rollover
-	// and trips departing early in the following hour). Past-hour trips
-	// with extreme delays may still lack a line label — that is an honest
-	// representation of the source (tl only exists in the trip's own hour).
+	// Static baseline for the current hour (cached; next-hour trips are
+	// captured by the next cycle's plan — plan data never changes).
 	now := time.Now().In(berlin)
-	plans := []*Timetable{}
-	for _, offset := range []time.Duration{0, time.Hour} {
-		h := now.Add(offset)
-		plan, err := irisGet(ctx, fmt.Sprintf("/plan/%s/%s/%s", in.Eva, h.Format("060102"), h.Format("15")))
-		if err != nil {
-			plan = &Timetable{} // hour without traffic / 404 — not fatal
-		}
-		plans = append(plans, plan)
-	}
+	plan, _ := fetchPlanHour(ctx, eva, now)
 
 	// Merge: plan provides the baseline (tl/pt/pp/ppth/pde), fchg overlays
-	// the changed fields (ct/cp/cpth/cs/cde). An fchg <s> replaces the plan
-	// entry, but per-event we fill planned fields from the plan twin so a
-	// change payload without pt still yields a planned time.
+	// the changed fields (ct/cp/cpth/cs/cde).
 	merged := map[string]*IrisStop{}
-	for _, plan := range plans {
-		for i := range plan.Stops {
-			merged[plan.Stops[i].ID] = &plan.Stops[i]
-		}
+	for i := range plan.Stops {
+		merged[plan.Stops[i].ID] = &plan.Stops[i]
 	}
 	for i := range fchg.Stops {
 		f := &fchg.Stops[i]
@@ -209,23 +230,25 @@ func (a *Iris) FetchStationBoard(ctx context.Context, in shared.FetchStationBoar
 		merged[f.ID] = f
 	}
 
-	events := make([]shared.StopEvent, 0, len(merged))
+	// Emit one StopEvent per ar AND per dp (both directions).
+	events := make([]shared.StopEvent, 0, len(merged)*2)
 	for _, stop := range merged {
-		var ev *IrisEvent
-		if in.Direction == "departure" {
-			ev = stop.DP
-		} else {
-			ev = stop.AR
+		for _, dir := range []struct {
+			name  string
+			event *IrisEvent
+		}{
+			{"arrival", stop.AR},
+			{"departure", stop.DP},
+		} {
+			if dir.event == nil {
+				continue
+			}
+			se, ok := irisEventToStopEvent(stop, dir.event, eva, dir.name, scrapedAt)
+			if !ok {
+				continue // unparsable time — skip malformed entries
+			}
+			events = append(events, se)
 		}
-		if ev == nil {
-			continue // this stop has no event of the requested direction
-		}
-
-		se, ok := irisEventToStopEvent(stop, ev, in.Eva, in.Direction, scrapedAt)
-		if !ok {
-			continue // unparsable planned time — skip malformed entries
-		}
-		events = append(events, se)
 	}
 	return shared.FetchStationBoardResult{Events: events, ScrapedAt: scrapedAt}, nil
 }
@@ -384,4 +407,3 @@ func tripKindHuman(t string) string {
 
 // _ suppresses unused warnings for helpers reserved for later use.
 var _ = tripKindHuman
-var _ = strconv.Itoa

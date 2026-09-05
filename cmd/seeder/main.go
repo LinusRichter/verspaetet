@@ -22,8 +22,8 @@ import (
 // Usage:
 //   seeder migrate up                 apply all pending up-migrations
 //   seeder migrate down [N]           rollback the last N migrations
-//   seeder --eva=<eva> [--direction=departure|arrival]
-//   seeder                            enqueue a board:fetch for all stations (both directions)
+//   seeder --eva=<eva>                enqueue one board fetch (both directions)
+//   seeder                            enqueue a board:fetch for all stations
 //
 // Periodic monitoring is handled by cmd/scheduler — the seeder is only for
 // manual one-offs and initial dispatch.
@@ -33,12 +33,8 @@ func main() {
 		return
 	}
 
-	var (
-		eva       string
-		direction string
-	)
-	flag.StringVar(&eva, "eva", "", "enqueue one board fetch for this EVA")
-	flag.StringVar(&direction, "direction", "both", "departure|arrival|both (with --eva)")
+	var eva string
+	flag.StringVar(&eva, "eva", "", "enqueue one board fetch (both directions) for this EVA")
 	flag.Parse()
 
 	redisAddr := envOr("REDIS_ADDR", "redis:6379")
@@ -46,21 +42,15 @@ func main() {
 	defer client.Close()
 
 	if eva != "" {
-		directions := []string{"departure", "arrival"}
-		if direction == "departure" || direction == "arrival" {
-			directions = []string{direction}
-		}
-		for _, d := range directions {
-			enqueueBoardFetch(client, eva, d)
-		}
+		enqueueBoardFetch(client, eva)
 		return
 	}
 	runFullSeed(client)
 }
 
-// enqueueBoardFetch enqueues a single board:fetch task.
-func enqueueBoardFetch(client *asynq.Client, eva, direction string) {
-	payload, err := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva, Direction: direction})
+// enqueueBoardFetch enqueues a single board:fetch task (both directions).
+func enqueueBoardFetch(client *asynq.Client, eva string) {
+	payload, err := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva})
 	if err != nil {
 		log.Fatalln("marshal:", err)
 	}
@@ -71,9 +61,9 @@ func enqueueBoardFetch(client *asynq.Client, eva, direction string) {
 		asynq.Timeout(2*time.Minute),
 	)
 	if err != nil {
-		log.Fatalf("[seeder] Unable to enqueue %s/%s: %v\n", eva, direction, err)
+		log.Fatalf("[seeder] Unable to enqueue %s: %v\n", eva, err)
 	}
-	log.Printf("[seeder] Enqueued board:fetch %s/%s (id %s)\n", eva, direction, info.ID)
+	log.Printf("[seeder] Enqueued board:fetch %s (id %s)\n", eva, info.ID)
 }
 
 // runFullSeed enqueues board:fetch (both directions) for every station in
@@ -109,17 +99,15 @@ func runFullSeed(client *asynq.Client) {
 	log.Printf("[seeder] Full seed: enqueuing board:fetch for %d stations.\n", len(evas))
 
 	for _, eva := range evas {
-		for _, d := range []string{"departure", "arrival"} {
-			payload, _ := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva, Direction: d})
-			_, err := client.Enqueue(
-				asynq.NewTask(asynqtasks.TypeBoardFetch, payload),
-				asynq.Queue(asynqtasks.QueueDefault),
-				asynq.MaxRetry(3),
-				asynq.Timeout(2*time.Minute),
-			)
-			if err != nil {
-				log.Printf("[seeder] WARN: enqueue %s/%s: %v\n", eva, d, err)
-			}
+		payload, _ := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva})
+		_, err := client.Enqueue(
+			asynq.NewTask(asynqtasks.TypeBoardFetch, payload),
+			asynq.Queue(asynqtasks.QueueDefault),
+			asynq.MaxRetry(3),
+			asynq.Timeout(2*time.Minute),
+		)
+		if err != nil {
+			log.Printf("[seeder] WARN: enqueue %s: %v\n", eva, err)
 		}
 	}
 	log.Println("[seeder] Full seed dispatched; exiting.")

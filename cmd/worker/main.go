@@ -16,9 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// worker handles board:fetch (one station, one direction) and
-// station:resolve (record unresolved route-path names) tasks. It reuses the
-// IRIS client + persist logic directly — no workflow engine involved.
+// worker handles board:fetch (one station, BOTH directions from one IRIS
+// pass: 1 fchg + 1 cached plan) and station:resolve tasks.
 //
 // DRY_RUN=1 skips the actual IRIS fetches (pipeline testing).
 func main() {
@@ -39,11 +38,8 @@ func main() {
 	iris := &activities.Iris{}
 	processor := &activities.Process{Pool: pool}
 
-	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
-	defer client.Close()
-
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, client, dryRun))
+	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, dryRun))
 	mux.HandleFunc(asynqtasks.TypeStationResolve, makeStationResolveHandler(processor))
 
 	srv := asynq.NewServer(asynq.RedisClientOpt{Addr: redisAddr}, asynq.Config{
@@ -60,9 +56,10 @@ func main() {
 	}
 }
 
-// makeBoardFetchHandler fetches one station board (IRIS) and persists it.
+// makeBoardFetchHandler fetches one station's complete board (both
+// directions, single IRIS pass) and persists it as two direction batches.
 // Unresolved route-path names become pending_stations rows (discovery).
-func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process, client *asynq.Client, dryRun bool) func(context.Context, *asynq.Task) error {
+func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process, dryRun bool) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
 		var p asynqtasks.BoardFetchPayload
 		if err := json.Unmarshal(t.Payload(), &p); err != nil {
@@ -73,31 +70,41 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 		}
 
 		if dryRun {
-			log.Printf("DRY-RUN board:fetch %s/%s (skipping fetch)", p.Eva, p.Direction)
+			log.Printf("DRY-RUN board:fetch %s (skipping fetch)", p.Eva)
 			return nil
 		}
 
-		result, err := iris.FetchStationBoard(ctx, shared.FetchStationBoardInput{
-			Eva:       p.Eva,
-			Direction: p.Direction,
-		})
+		result, err := iris.FetchStationBoard(ctx, p.Eva)
 		if err != nil {
-			return fmt.Errorf("fetch %s/%s: %w", p.Eva, p.Direction, err)
+			return fmt.Errorf("fetch %s: %w", p.Eva, err)
 		}
 
-		if len(result.Events) == 0 {
-			return nil
+		// Split into per-direction batches (scrape_runs is direction-keyed).
+		arrivals := make([]shared.StopEvent, 0, len(result.Events)/2)
+		departures := make([]shared.StopEvent, 0, len(result.Events)/2)
+		for _, ev := range result.Events {
+			if ev.Direction == "arrival" {
+				arrivals = append(arrivals, ev)
+			} else {
+				departures = append(departures, ev)
+			}
 		}
 
-		pr, err := processor.PersistStopEvent(ctx, result.Events)
-		if err != nil {
-			return fmt.Errorf("persist %s/%s: %w", p.Eva, p.Direction, err)
+		var newNames []string
+		for _, batch := range [][]shared.StopEvent{arrivals, departures} {
+			if len(batch) == 0 {
+				continue
+			}
+			pr, err := processor.PersistStopEvent(ctx, batch)
+			if err != nil {
+				return fmt.Errorf("persist %s/%s: %w", p.Eva, batch[0].Direction, err)
+			}
+			newNames = append(newNames, pr.NewStations...)
 		}
 
-		// Discovery: record unresolved names (Fire&Forget-ish — errors are
-		// logged, not retried; the next scrape re-derives the same names).
-		if len(pr.NewStations) > 0 {
-			if err := processor.RecordPendingStations(ctx, pr.NewStations, p.Eva); err != nil {
+		// Discovery: record unresolved names for the next StaDa import.
+		if len(newNames) > 0 {
+			if err := processor.RecordPendingStations(ctx, newNames, p.Eva); err != nil {
 				log.Printf("WARN record pending from %s: %v", p.Eva, err)
 			}
 		}
@@ -106,7 +113,7 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 }
 
 // makeStationResolveHandler records a list of unresolved names for one
-// source station (used when discovery is triggered explicitly).
+// source station (explicit/manual discovery backfill).
 func makeStationResolveHandler(processor *activities.Process) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
 		var p asynqtasks.StationResolvePayload

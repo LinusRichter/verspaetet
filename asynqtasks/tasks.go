@@ -13,9 +13,10 @@ const (
 )
 
 // BoardFetchPayload is the payload for a board fetch + persist task.
+// One task per STATION — fchg/plan return both directions in one document;
+// the worker splits arrival/departure batches client-side (zero extra requests).
 type BoardFetchPayload struct {
-	Eva       string `json:"eva"`
-	Direction string `json:"direction"` // "departure" | "arrival"
+	Eva string `json:"eva"`
 }
 
 // StationResolvePayload records unresolved route-path names.

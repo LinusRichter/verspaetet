@@ -92,6 +92,7 @@ services:
       - IRIS_API_KEY=${IRIS_API_KEY}
       - STADA_CLIENT_ID=${STADA_CLIENT_ID}
       - STADA_API_KEY=${STADA_API_KEY}
+      - CADENCE_MINUTES=${CADENCE_MINUTES:-30}
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,6 +144,7 @@ services:
     environment:
       - REDIS_ADDR=redis:6379
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
+      - CADENCE_MINUTES=${CADENCE_MINUTES:-30}
     depends_on:
       redis:
         condition: service_healthy

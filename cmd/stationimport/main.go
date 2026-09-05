@@ -154,7 +154,11 @@ func isDigits(s string) bool {
 	return true
 }
 
+// upsertStations inserts/updates stations. fetch_offset is computed with the
+// SAME CADENCE_MINUTES the scheduler runs with (default 30) — changing the
+// cadence requires re-running stationimport with the new value.
 func upsertStations(ctx context.Context, pool *pgxpool.Pool, rows []stationRow) error {
+	cadence := envInt("CADENCE_MINUTES", 30)
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -176,7 +180,7 @@ ON CONFLICT (eva) DO UPDATE SET
 		slug := shared.Slugify(r.Name)
 		_, err := tx.Exec(ctx, upsert,
 			r.Eva, r.Name, slug, r.Cat, r.Lat, r.Lon, r.State,
-			shared.FetchOffset(slug),
+			shared.FetchOffset(slug)%cadence,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert %s (%s): %w", r.Eva, r.Name, err)
@@ -185,8 +189,17 @@ ON CONFLICT (eva) DO UPDATE SET
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	log.Printf("[stationimport] upserted %d stations", len(rows))
+	log.Printf("[stationimport] upserted %d stations (cadence=%dm)", len(rows), cadence)
 	return nil
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
 
 // resolvePending resolves pending_stations rows whose name now exists in

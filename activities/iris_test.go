@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"verspaetet/shared"
 )
 
 func loadXMLFixture(t *testing.T, name string) *Timetable {
@@ -200,41 +198,30 @@ func TestIrisMergePlanAndFchg(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	iris := &Iris{}
-	res, err := iris.FetchStationBoard(context.Background(), shared.FetchStationBoardInput{
-		Eva: "8000105", Direction: "departure",
-	})
+	res, err := iris.FetchStationBoard(context.Background(), "8000105")
 	if err != nil {
 		t.Fatalf("FetchStationBoard: %v", err)
 	}
 
-	// 3 unique departures: ICE 577 (fchg), S8 dp (fchg), RE 30 (fchg),
-	// ICE 990 (plan only, unchanged). ICE 577 exists in both → merged once.
+	// All four unique departures + the S8 arrival — one fetch, both directions.
 	byNumber := map[string]int{}
 	for _, ev := range res.Events {
-		byNumber[ev.TrainNumber]++
+		byNumber[ev.TrainNumber+"/"+ev.Direction]++
 	}
-	if byNumber["577"] != 1 {
-		t.Errorf("ICE 577 appears %d times (plan+fchg must merge to 1)", byNumber["577"])
+	if byNumber["577/departure"] != 1 {
+		t.Errorf("ICE 577 departure appears %d times (plan+fchg must merge to 1)", byNumber["577/departure"])
 	}
-	if byNumber["990"] != 1 {
-		t.Errorf("ICE 990 (plan-only, unchanged) appears %d times, want 1", byNumber["990"])
+	if byNumber["990/departure"] != 1 {
+		t.Errorf("ICE 990 (plan-only, unchanged) departure appears %d times, want 1", byNumber["990/departure"])
 	}
-	if byNumber["30"] != 1 {
-		t.Errorf("RE 30 appears %d times, want 1", byNumber["30"])
+	if byNumber["30/departure"] != 1 {
+		t.Errorf("RE 30 departure appears %d times, want 1", byNumber["30/departure"])
 	}
-	if byNumber["8"] != 1 {
-		t.Errorf("S8 departure appears %d times, want 1", byNumber["8"])
+	if byNumber["8/departure"] != 1 {
+		t.Errorf("S8 departure appears %d times, want 1", byNumber["8/departure"])
 	}
-
-	// Arrival direction: S8 ar + ICE 577 has no ar → only S8.
-	resArr, err := iris.FetchStationBoard(context.Background(), shared.FetchStationBoardInput{
-		Eva: "8000105", Direction: "arrival",
-	})
-	if err != nil {
-		t.Fatalf("FetchStationBoard arrival: %v", err)
-	}
-	if len(resArr.Events) != 1 || resArr.Events[0].TrainNumber != "8" {
-		t.Errorf("arrival events = %+v, want only S8", resArr.Events)
+	if byNumber["8/arrival"] != 1 {
+		t.Errorf("S8 arrival appears %d times, want 1 (same fetch serves both directions)", byNumber["8/arrival"])
 	}
 	_ = strings.TrimSpace
 }

@@ -27,13 +27,7 @@ type StopEvent struct {
 	ParentEva       string // station that discovered this one (path names), "" for direct scrapes
 }
 
-// FetchStationBoardInput is the input to a board fetch.
-type FetchStationBoardInput struct {
-	Eva      string
-	Direction string // "departure" | "arrival"
-}
-
-// FetchStationBoardResult is the output of a board fetch.
+// FetchStationBoardResult is the output of a board fetch (both directions).
 type FetchStationBoardResult struct {
 	Events    []StopEvent
 	ScrapedAt time.Time
