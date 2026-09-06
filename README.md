@@ -6,13 +6,6 @@ verspaetet (German for "delayed") is a proof-of-concept that collects departure 
 
 > **Note:** This is a POC built entirely with agentic code. The quality is rough and not production-ready.
 
-## How it works
-
-1. `stationimport` pulls the full station universe (~5,400 active stations incl. coordinates) from the DB StaDa API — one call
-2. The **scheduler** ticks every minute and enqueues `board:fetch` tasks for every station whose hash-derived time slot matches (30-min cadence, evenly spread)
-3. The **worker** fetches each station's board from the IRIS Timetables API (`/fchg` + current-hour `/plan`), merges planned and real-time data, and persists snapshots — a new row only when something observable changed (delay, platform, cancellation), so the dataset captures the **evolution** of each train's delay
-4. Unknown station names seen in route paths land in `pending_stations` and are resolved by the next StaDa import (discovery loop)
-
 ## Stack
 
 - **Go** — worker, scheduler, API server
