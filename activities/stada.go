@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"verspaetet/ratelimit"
 )
 
 // ── StaDa API (station master data) ───────────────────────────────────────
@@ -87,10 +89,20 @@ func stadaBaseURL() string {
 
 var stadaHTTP = &http.Client{Timeout: 60 * time.Second}
 
+// stadaLimiter gates every outbound StaDa request: 1 token = 1 request.
+// STADA_RATE_LIMIT env (requests/minute); unset = unlimited (testing only!).
+// StaDa free terms say ~1 call/day — set STADA_RATE_LIMIT=1 for production
+// imports so an accidental double-run can't hammer the endpoint.
+var stadaLimiter = ratelimit.FromEnv("STADA_RATE_LIMIT")
+
 // FetchStadaStations queries all active stations (category 1-7) in ONE call.
 // Auth uses the StaDa key pair (STADA_CLIENT_ID/STADA_API_KEY), falling back
 // to the IRIS pair when the StaDa-specific envs are unset (single-subscription setups).
 func FetchStadaStations(ctx context.Context) ([]StadaStation, error) {
+	// Token check BEFORE building/sending the request.
+	if err := stadaLimiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("stada rate limiter: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		stadaBaseURL()+"/stations?limit=10000&category=1-7", nil)
 	if err != nil {

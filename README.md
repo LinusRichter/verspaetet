@@ -5,6 +5,8 @@ Experimental project to aggregate a dataset of Deutsche Bahn delays at train sta
 verspaetet (German for "delayed") is a proof-of-concept that collects departure and arrival board data via the official DB Timetables API (IRIS), persists delay datapoints to Postgres, and serves a web UI for monitoring. Job orchestration runs on asynq (Redis-backed), with asynqmon as the job dashboard.
 
 > **Note:** This is a POC built entirely with agentic code. The quality is rough and not production-ready.
+>
+> **Rate limits:** Building a gapless dataset (all ~5,400 stations at a consistent, fine-grained cadence) requires a rate limit beyond the free tier (60 req/min for IRIS). Such an increase must be requested from the API provider (developers.deutschebahn.com / IRIS-TTS.API@deutschebahn.com). The collector enforces its configured limits client-side via a token bucket (`IRIS_RATE_LIMIT`, `STADA_RATE_LIMIT`) so it never exceeds them — requests beyond the budget simply wait.
 
 ## Stack
 
@@ -34,33 +36,6 @@ docker compose up -d
 UIs:
 - Monitor UI: `http://localhost:8080`
 - asynqmon (jobs): `http://localhost:8081`
-
-## Test one station
-
-```bash
-docker compose run --rm seeder --eva=8000105 --direction=departure
-```
-
-## Migrations
-
-```bash
-docker compose run --rm seeder migrate up
-docker compose run --rm seeder migrate down 1
-```
-
-## Re-import stations (StaDa)
-
-```bash
-docker compose run --rm stationimport
-```
-
-## Build from source
-
-```bash
-go build ./...
-go vet ./...
-go test ./...
-```
 
 ## Data model
 

@@ -92,6 +92,7 @@ services:
       - IRIS_API_KEY=${IRIS_API_KEY}
       - STADA_CLIENT_ID=${STADA_CLIENT_ID}
       - STADA_API_KEY=${STADA_API_KEY}
+      - STADA_RATE_LIMIT=${STADA_RATE_LIMIT:-1}
       - CADENCE_MINUTES=${CADENCE_MINUTES:-30}
     depends_on:
       postgres:
@@ -118,6 +119,7 @@ services:
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
       - IRIS_CLIENT_ID=${IRIS_CLIENT_ID}
       - IRIS_API_KEY=${IRIS_API_KEY}
+      - IRIS_RATE_LIMIT=${IRIS_RATE_LIMIT:-60}
       - ASYNQ_CONCURRENCY=10
     depends_on:
       redis:

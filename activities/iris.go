@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"verspaetet/ratelimit"
 	"verspaetet/shared"
 )
 
@@ -120,8 +121,19 @@ func irisBaseURL() string {
 // irisHTTP is the shared client (connection reuse, sane timeout).
 var irisHTTP = &http.Client{Timeout: 30 * time.Second}
 
+// irisLimiter gates every outbound IRIS request: 1 token = 1 request.
+// IRIS_RATE_LIMIT env (requests/minute); unset = unlimited (testing only!).
+// The wait happens HERE — the single choke point before any request leaves
+// the process — so no scheduler burst or worker concurrency can exceed the
+// configured rate, no matter what.
+var irisLimiter = ratelimit.FromEnv("IRIS_RATE_LIMIT")
+
 // irisGet fetches and decodes a <timetable> XML document from one endpoint.
 func irisGet(ctx context.Context, path string) (*Timetable, error) {
+	// Token check BEFORE building/sending the request.
+	if err := irisLimiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("iris rate limiter: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, irisBaseURL()+path, nil)
 	if err != nil {
 		return nil, err
