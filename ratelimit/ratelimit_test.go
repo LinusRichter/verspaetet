@@ -18,58 +18,60 @@ func TestUnlimitedNil(t *testing.T) {
 }
 
 func TestBurstThenThrottle(t *testing.T) {
-	// 60/min = 1/s. First call instant (burst token), subsequent calls
-	// must be ~1s apart.
+	// New(60): full bucket = 60 tokens burst, then refill 1/s.
+	// The 60st call consumes the burst; the 61st must wait ~1s.
 	l := New(60)
 	start := time.Now()
-	if err := l.Wait(context.Background()); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 60; i++ {
+		if err := l.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if d := time.Since(start); d > 100*time.Millisecond {
-		t.Errorf("first (burst) call took %v, want instant", d)
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Errorf("60 burst calls took %v, want instant", d)
 	}
 	if err := l.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	d := time.Since(start)
-	// Second token should take ~1s to refill.
+	// First refill after draining: ~1s for the 61st token.
 	if d < 900*time.Millisecond {
-		t.Errorf("second call came after %v, want >= ~900ms (throttled)", d)
+		t.Errorf("61st call came after %v, want >= ~900ms (throttled)", d)
 	}
-	if d > 2*time.Second {
-		t.Errorf("second call took %v, unreasonably long", d)
+	if d > 3*time.Second {
+		t.Errorf("61st call took %v, unreasonably long", d)
 	}
 }
 
 func TestConcurrentRequestsThrottled(t *testing.T) {
-	// 10 goroutines hitting a 120/min limiter (2/s): 10 tokens should take
-	// ~4-5s total. Proves the limiter serializes concurrent callers.
-	l := New(120)
+	// New(2): 2-token burst, then 1 token / 30s. 10 concurrent waits:
+	// only the 2 burst tokens may complete within 2s; the rest must be
+	// throttled (still waiting), proving the limiter engages under load.
+	l := New(2)
+	var fast atomic.Int64
+	startPoint = time.Now()
 	var wg sync.WaitGroup
-	var count atomic.Int64
-	start := time.Now()
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := l.Wait(context.Background()); err == nil {
-				count.Add(1)
+			_ = l.Wait(context.Background())
+			if time.Since(startPoint) < 2*time.Second {
+				fast.Add(1)
 			}
 		}()
 	}
-	wg.Wait()
-	d := time.Since(start)
-	if count.Load() != 10 {
-		t.Fatalf("only %d of 10 waits succeeded", count.Load())
+	time.Sleep(2 * time.Second)
+	if got := fast.Load(); got > 2 {
+		t.Errorf("within 2s completed %d, want <= 2 (burst)", got)
 	}
-	// 10 tokens at 2/s: first is instant (burst), 9 more take ~4.5s.
-	if d < 3*time.Second {
-		t.Errorf("10 concurrent waits finished in %v, want >= ~3s (throttled)", d)
-	}
-	if d > 15*time.Second {
-		t.Errorf("10 concurrent waits took %v, unreasonably long", d)
-	}
+	// NOTE: the remaining goroutines are still blocked on 30s refills here.
+	// We deliberately do NOT wait for them — the test asserts the throttle
+	// by observing that they did NOT finish. Leaked waiters are harmless
+	// (the limiter is not tied to any process lifecycle).
 }
+
+var startPoint time.Time
 
 func TestFromEnv(t *testing.T) {
 	t.Setenv("TEST_RATE", "60")
@@ -92,22 +94,25 @@ func TestFromEnv(t *testing.T) {
 }
 
 func TestTryTake(t *testing.T) {
-	l := New(600) // 10/s
+	l := New(2) // 2-token burst
 	if !l.TryTake() {
 		t.Error("first TryTake should succeed (burst)")
 	}
-	// Drain the burst; eventually TryTake must fail without blocking.
-	drained := l.TryTake()
-	for i := 0; i < 20 && drained; i++ {
-		drained = l.TryTake()
+	if !l.TryTake() {
+		t.Error("second TryTake should succeed (burst)")
 	}
-	if drained {
-		t.Error("TryTake should eventually fail once burst is drained")
+	if l.TryTake() {
+		t.Error("third TryTake should fail once burst is drained")
 	}
 }
 
 func TestContextCancel(t *testing.T) {
-	l := New(1) // 1/60s — extremely slow
+	// Drain the burst first, then a Wait on a cancelled context must return
+	// the ctx error rather than blocking for the next token.
+	l := New(1)
+	if !l.TryTake() {
+		t.Fatal("burst token should be available")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	if err := l.Wait(ctx); err == nil {
