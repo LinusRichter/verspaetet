@@ -4,12 +4,14 @@ package asynqtasks
 const (
 	TypeBoardFetch     = "board:fetch"
 	TypeStationResolve = "station:resolve"
+	TypeExportMonth    = "export:month"
 )
 
 // Queue names.
 const (
 	QueueDefault   = "default"
 	QueueDiscovery = "discovery"
+	QueueExport    = "export"
 )
 
 // BoardFetchPayload is the payload for a board fetch + persist task.
@@ -23,4 +25,10 @@ type BoardFetchPayload struct {
 type StationResolvePayload struct {
 	Names    []string `json:"names"`
 	SeenFrom string    `json:"seen_from"`
+}
+
+// ExportMonthPayload exports one operating month to Parquet + manifest.
+type ExportMonthPayload struct {
+	Year  int `json:"year"`
+	Month int `json:"month"`
 }

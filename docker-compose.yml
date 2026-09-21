@@ -121,6 +121,9 @@ services:
       - IRIS_API_KEY=${IRIS_API_KEY}
       - IRIS_RATE_LIMIT=${IRIS_RATE_LIMIT:-60}
       - ASYNQ_CONCURRENCY=10
+      - EXPORTS_DIR=/exports
+    volumes:
+      - verspaetet_exports:/exports
     depends_on:
       redis:
         condition: service_healthy
@@ -189,3 +192,4 @@ volumes:
   verspaetet_pg:
     name: bahn-downfall_bahn_downfall_pg
   verspaetet_redis:
+  verspaetet_exports:

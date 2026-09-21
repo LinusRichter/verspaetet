@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -49,10 +51,51 @@ func main() {
 
 	// Tick once immediately, then every minute.
 	tick(ctx, pool, client, cadence, dryRun)
-	for range ticker.C {
-		tick(ctx, pool, client, cadence, dryRun)
+	for {
+		select {
+		case <-ticker.C:
+			tick(ctx, pool, client, cadence, dryRun)
+			// Monthly dataset export: on the 4th of each month at 04:00 UTC
+			// export the PREVIOUS operating month (+3 days finality lag).
+			now := time.Now().UTC()
+			if now.Day() == 4 && now.Hour() == 4 && now.Minute() == 0 {
+				enqueueMonthExport(ctx, client, now.AddDate(0, -1, 0))
+			}
+		}
 	}
 }
+
+// enqueueMonthExport enqueues the export task for the month of t.
+// Guarded: the minute-tick fires exactly once per minute, and the day/hour/
+// minute condition only matches once a month.
+func enqueueMonthExport(ctx context.Context, client *asynq.Client, forMonth time.Time) {
+	if dryRun() {
+		return
+	}
+	y, m := forMonth.Year(), int(forMonth.Month())
+	payload, err := json.Marshal(asynqtasks.ExportMonthPayload{Year: y, Month: m})
+	if err != nil {
+		log.Printf("WARN export marshal: %v", err)
+		return
+	}
+	_, err = client.EnqueueContext(ctx,
+		asynq.NewTask(asynqtasks.TypeExportMonth, payload),
+		asynq.Queue(asynqtasks.QueueExport),
+		asynq.MaxRetry(5),
+		asynq.Timeout(30*time.Minute),
+		asynq.TaskID(fmt.Sprintf("export:%04d%02d", y, m)), // dedup: once per month, ever
+	)
+	switch {
+	case err == nil:
+		log.Printf("enqueued export for %04d-%02d", y, m)
+	case errors.Is(err, asynq.ErrDuplicateTask) || errors.Is(err, asynq.ErrTaskIDConflict):
+		log.Printf("export for %04d-%02d already enqueued/done", y, m)
+	default:
+		log.Printf("WARN enqueue export %04d-%02d: %v", y, m, err)
+	}
+}
+
+func dryRun() bool { return os.Getenv("DRY_RUN") == "1" }
 
 // tick enqueues one board:fetch per station due in this minute slot.
 // ~5400 stations / 30 slots ≈ 180 stations per tick (at 30-min cadence).

@@ -41,12 +41,14 @@ func main() {
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, dryRun))
 	mux.HandleFunc(asynqtasks.TypeStationResolve, makeStationResolveHandler(processor))
+	mux.HandleFunc(asynqtasks.TypeExportMonth, makeExportMonthHandler(pool))
 
 	srv := asynq.NewServer(asynq.RedisClientOpt{Addr: redisAddr}, asynq.Config{
 		Concurrency: envInt("ASYNQ_CONCURRENCY", 10),
 		Queues: map[string]int{
 			asynqtasks.QueueDiscovery: 10,
-			asynqtasks.QueueDefault:  5,
+			asynqtasks.QueueDefault:   5,
+			asynqtasks.QueueExport:   1,
 		},
 	})
 
@@ -108,6 +110,30 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 				log.Printf("WARN record pending from %s: %v", p.Eva, err)
 			}
 		}
+		return nil
+	}
+}
+
+// makeExportMonthHandler exports one operating month (Parquet + manifest)
+// into EXPORTS_DIR (default /exports). Schema version is configurable via
+// DATASET_SCHEMA_VERSION (default v0.1-beta).
+func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, t *asynq.Task) error {
+		var p asynqtasks.ExportMonthPayload
+		if err := json.Unmarshal(t.Payload(), &p); err != nil {
+			return fmt.Errorf("unmarshal payload: %v: %w", err, asynq.SkipRetry)
+		}
+		if p.Year < 2000 || p.Month < 1 || p.Month > 12 {
+			return fmt.Errorf("invalid year/month %d/%d: %w", p.Year, p.Month, asynq.SkipRetry)
+		}
+		outDir := envOr("EXPORTS_DIR", "/exports")
+		schema := envOr("DATASET_SCHEMA_VERSION", "v0.1-beta")
+		m, err := activities.ExportMonth(ctx, pool, outDir, p.Year, p.Month, schema)
+		if err != nil {
+			return fmt.Errorf("export %d-%02d: %w", p.Year, p.Month, err)
+		}
+		log.Printf("export %d-%02d done: %d stop_events, %d stations, manifest at %s",
+			p.Year, p.Month, m.StopEvents.Rows, m.Stations.Rows, outDir)
 		return nil
 	}
 }
