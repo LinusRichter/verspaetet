@@ -23,14 +23,16 @@ type Limiter struct {
 
 // New creates a limiter allowing `perMinute` requests per minute.
 // perMinute <= 0 means unlimited (Wait returns immediately).
+// The bucket starts FULL (burst = 1 minute of budget), so the first request
+// fires immediately and sustained polling stays at perMinute thereafter.
 func New(perMinute int) *Limiter {
 	if perMinute <= 0 {
 		return nil // nil *Limiter = unlimited
 	}
 	rate := float64(perMinute) / 60.0
 	return &Limiter{
-		tokens:   rate, // start with 1s worth of tokens (small burst)
-		max:      rate,
+		tokens:   float64(perMinute), // full 1-minute budget as burst
+		max:      float64(perMinute),
 		rate:     rate,
 		lastFill: time.Now(),
 	}
