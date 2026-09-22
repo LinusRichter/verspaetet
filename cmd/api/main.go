@@ -300,11 +300,11 @@ func handleOpsCollection(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 		  (SELECT count(*) FROM stations),
 		  (SELECT count(*) FROM stations WHERE no_iris),
 		  (SELECT count(*) FROM pending_stations),
-		  (SELECT count(*) FILTER (WHERE NOT cancelled AND ABS(EXTRACT(EPOCH FROM (actual_time-planned_time))/60) < 2))::float
+		  (SELECT count(*) FILTER (WHERE NOT cancelled AND ABS(EXTRACT(EPOCH FROM (actual_time-planned_time))/60) < 2) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour')::float
 		   / GREATEST((SELECT count(*) FILTER (WHERE actual_time IS NOT NULL) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'), 1) * 100,
-		  (SELECT count(*) FILTER (WHERE cancelled))::float
+		  (SELECT count(*) FILTER (WHERE cancelled) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour')::float
 		   / GREATEST((SELECT count(*) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'), 1) * 100,
-		  (SELECT avg(n)::float FROM (SELECT count(*) AS n FROM stop_events GROUP BY stop_id, direction) x),
+		  (SELECT avg(n)::float FROM (SELECT count(*) AS n FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour' GROUP BY stop_id, direction) x),
 		  (SELECT min(scraped_at)::text FROM stop_events),
 		  (SELECT pg_size_pretty(pg_database_size(current_database())))`).
 		Scan(&c.EventsLastHour, &c.DistinctStations, &c.TotalStations, &c.NoIrisStations,
