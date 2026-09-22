@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
@@ -155,9 +156,16 @@ func main() {
 	mux.HandleFunc("GET /api/ops/collection", func(w http.ResponseWriter, r *http.Request) {
 		handleOpsCollection(w, r, pool)
 	})
+	mux.HandleFunc("GET /api/ops/exports", func(w http.ResponseWriter, r *http.Request) {
+		handleOpsExports(w, r)
+	})
 
 	// Serve React static files if web/dist exists.
 	if _, err := os.Stat("web/dist"); err == nil {
+		// /ops → ops.html (ops dashboard, separate Vite entry).
+		mux.HandleFunc("GET /ops", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, filepath.Join("web", "dist", "ops.html"))
+		})
 		mux.Handle("/", http.FileServer(http.Dir("web/dist")))
 	}
 
@@ -270,17 +278,17 @@ func handleOpsFailed(w http.ResponseWriter, r *http.Request, inspector *asynq.In
 }
 
 type opsCollection struct {
-	EventsLastHour      int     `json:"events_last_hour"`
-	DistinctStations    int     `json:"stations_scraped_last_hour"`
-	TotalStations       int     `json:"total_stations"`
-	NoIrisStations      int     `json:"no_iris_stations"`
-	PendingStations     int     `json:"pending_stations"`
-	EventsPerMinute    float64 `json:"events_per_minute"`
-	PunctualPct        float64 `json:"punctual_pct"`
-	CancelledPct        float64 `json:"cancelled_pct"`
-	AvgSnapsPerStop     float64 `json:"avg_snaps_per_stop"`
-	OldestEvent         string  `json:"oldest_event"`
-	DBSize              string  `json:"db_size"`
+	EventsLastHour   int     `json:"events_last_hour"`
+	DistinctStations int     `json:"stations_scraped_last_hour"`
+	TotalStations    int     `json:"total_stations"`
+	NoIrisStations   int     `json:"no_iris_stations"`
+	PendingStations  int     `json:"pending_stations"`
+	EventsPerMinute  float64 `json:"events_per_minute"`
+	PunctualPct      float64 `json:"punctual_pct"`
+	CancelledPct     float64 `json:"cancelled_pct"`
+	AvgSnapsPerStop  float64 `json:"avg_snaps_per_stop"`
+	OldestEvent      string  `json:"oldest_event"`
+	DBSize           string  `json:"db_size"`
 }
 
 func handleOpsCollection(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
@@ -308,6 +316,53 @@ func handleOpsCollection(w http.ResponseWriter, r *http.Request, pool *pgxpool.P
 	}
 	c.EventsPerMinute = float64(c.EventsLastHour) / 60.0
 	writeJSON(w, c)
+}
+
+type opsExportChunk struct {
+	Name       string `json:"name"`
+	Files      int    `json:"files"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+// handleOpsExports lists the exported monthly chunks in EXPORTS_DIR.
+// Read-only: names, file count and total size per chunk directory.
+func handleOpsExports(w http.ResponseWriter, r *http.Request) {
+	dir := os.Getenv("EXPORTS_DIR")
+	if dir == "" {
+		dir = "/exports"
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// No exports yet — empty list, not an error.
+		writeJSON(w, []opsExportChunk{})
+		return
+	}
+	var out []opsExportChunk
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sub, err := os.ReadDir(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var files int
+		var total int64
+		for _, f := range sub {
+			if f.IsDir() {
+				continue
+			}
+			files++
+			if info, err := f.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		out = append(out, opsExportChunk{Name: e.Name(), Files: files, TotalBytes: total})
+	}
+	if out == nil {
+		out = []opsExportChunk{}
+	}
+	writeJSON(w, out)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {
