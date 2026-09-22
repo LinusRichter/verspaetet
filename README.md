@@ -2,21 +2,22 @@
 
 Experimental project to aggregate a dataset of Deutsche Bahn delays at train stations.
 
-verspaetet (German for "delayed") is a proof-of-concept that collects departure and arrival board data via the official DB Timetables API (IRIS), persists delay datapoints to Postgres, and serves a web UI for monitoring. Job orchestration runs on asynq (Redis-backed), with asynqmon as the job dashboard.
+verspaetet (German for "delayed") is a proof-of-concept that collects departure and arrival board data via the official DB Timetables API (IRIS), persists delay datapoints to Postgres, and serves a web UI for monitoring. Job orchestration runs on asynq (Redis-backed).
 
 > **Note:** This is a POC built entirely with agentic code. The quality is rough.
 >
 > **Rate limits:** Building a gapless dataset (all ~5,400 stations at a consistent, fine-grained cadence) requires a rate limit beyond the free tier (60 req/min for IRIS). Such an increase must be requested from the API provider (developers.deutschebahn.com / IRIS-TTS.API@deutschebahn.com).
 
-## Stack
+## The dataset
 
-- **Go** — worker, scheduler, API server
-- **asynq** (Redis) — job queue with retries
-- **asynqmon** — job monitoring UI (:8081)
-- **Postgres** — collected data
-- **DB Timetables API (IRIS)** — planned + real-time timetable data (free plan, 60 req/min)
-- **DB StaDa API** — station master data (free plan)
-- **React + Vite** — monitoring UI (:8080)
+Monthly Parquet chunks of delay-evolution snapshots for all German IRIS stations.
+
+- **What:** per train stop: planned/actual time, delay, platform (planned/actual), cancellation, line category, train number, operator, route path. Multiple snapshots per train stop = how the communicated delay evolved over time (the unique value of this dataset: endpoint-only "final delay" data exists elsewhere; this records the whole curve).
+- **Coverage:** all ~5,400 IRIS-active stations, one snapshot every 40 minutes (same cadence for every station), both directions from one request per station.
+- **Gaps:** known downtime is documented per chunk in `manifest.json` (`coverage.downtimes`) and the chunk README; `coverage.missing_days` lists operating days without any data.
+- **Format:** Parquet (zstd), partitioned by operating month (`trip_date`), plus `stations.parquet` and a `manifest.json` (SHA256 checksums, coverage, schema version).
+- **License:** CC BY 4.0 (attribution required, see below).
+- **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet) - first chunk (2026-09) publishes 2026-10-04, one chunk on the 4th of each month (previous operating month, +3 days finality lag). Local copies on the collector server under `/exports/<YYYY-MM>/`.
 
 ## Setup
 
@@ -35,7 +36,7 @@ docker compose up -d
 
 UIs:
 - Monitor UI: `http://localhost:8080`
-- asynqmon (jobs): `http://localhost:8081`
+- Ops dashboard: `http://localhost:8080/ops`
 
 ## Data model
 
@@ -50,18 +51,6 @@ pending_stations discovery: unresolved route-path names
 ```
 
 Views: `delays` (NULL-preserving delay_seconds), `platform_changes`.
-
-## Project layout
-
-```
-cmd/                Go entrypoints (api, worker, scheduler, seeder, stationimport)
-activities/         IRIS client, StaDa client, persistence
-asynqtasks/         task type + payload definitions
-shared/             domain types, slugify, fetch-offset hash
-db/migrations/      Postgres schema (0001_iris_init)
-web/                React + Vite monitoring UI
-docker-compose.yml
-```
 
 ## License
 
