@@ -49,12 +49,33 @@ func main() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	// Tick once immediately, then every minute.
-	tick(ctx, pool, client, cadence, dryRun)
+	// Tick once immediately, then every minute. lastSlot tracks the last
+	// processed slot so a stalled or sleeping process catches up missed
+	// slots on the next tick instead of losing coverage permanently.
+	lastSlot := int(time.Now().Unix() / 60) % cadence
+	tick(ctx, pool, client, cadence, dryRun, lastSlot)
 	for {
 		select {
 		case <-ticker.C:
-			tick(ctx, pool, client, cadence, dryRun)
+			cur := int(time.Now().Unix() / 60) % cadence
+			if cur != lastSlot {
+				// Catch up: all slots after lastSlot up to and including cur
+				// (mod cadence), in order. Covers ticks lost to stalls.
+				missed := (cur - lastSlot + cadence) % cadence
+				if missed > cadence { // impossible, but be safe
+					missed = cadence
+				}
+				var catchUp []int
+				for i := 1; i <= missed; i++ {
+					catchUp = append(catchUp, (lastSlot+i)%cadence)
+				}
+				log.Printf("catching up %d missed slot(s): %v", missed, catchUp)
+				tick(ctx, pool, client, cadence, dryRun, catchUp...)
+				lastSlot = cur
+				continue
+			}
+			lastSlot = cur
+			tick(ctx, pool, client, cadence, dryRun, cur)
 			// Monthly dataset export: on the 4th of each month at 04:00 UTC
 			// export the PREVIOUS operating month (+3 days finality lag).
 			now := time.Now().UTC()
@@ -97,13 +118,24 @@ func enqueueMonthExport(ctx context.Context, client *asynq.Client, forMonth time
 
 func dryRun() bool { return os.Getenv("DRY_RUN") == "1" }
 
-// tick enqueues one board:fetch per station due in this minute slot.
-// ~5400 stations / 30 slots ≈ 180 stations per tick (at 30-min cadence).
-func tick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, cadence int, dryRun bool) {
+// tick enqueues one board:fetch per station due in each minute slot given by
+// slots — a single slot on the happy path, or the catch-up range after a
+// stall. Each enqueue is bounded by a per-call timeout so one slow Redis
+// roundtrip can never freeze the tick loop (seen 2026-09-22: 11-min stall,
+// lost slots).
+func tick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, cadence int, dryRun bool, slots ...int) {
 	if dryRun {
 		return
 	}
-	slot := int(time.Now().Unix() / 60) % cadence
+	if len(slots) == 0 {
+		slots = []int{int(time.Now().Unix() / 60) % cadence}
+	}
+	for _, slot := range slots {
+		runTick(ctx, pool, client, slot)
+	}
+}
+
+func runTick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, slot int) {
 	rows, err := pool.Query(ctx, "SELECT eva FROM stations WHERE fetch_offset = $1 AND NOT no_iris", slot)
 	if err != nil {
 		log.Printf("WARN tick query: %v", err)
@@ -124,12 +156,17 @@ func tick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, cadence
 		if err != nil {
 			continue
 		}
-		_, err = client.EnqueueContext(ctx,
+		// Bounded enqueue: each call gets its own 5s window. On failure we
+		// log and move on — asynq has no record of the task, so the next
+		// catch-up run must cover it (handled by the caller's catch-up logic).
+		ectx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err = client.EnqueueContext(ectx,
 			asynq.NewTask(asynqtasks.TypeBoardFetch, payload),
 			asynq.Queue(asynqtasks.QueueDefault),
 			asynq.MaxRetry(3),
 			asynq.Timeout(2*time.Minute),
 		)
+		cancel()
 		if err != nil {
 			log.Printf("WARN enqueue %s: %v", eva, err)
 			continue

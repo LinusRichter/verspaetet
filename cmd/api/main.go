@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -140,6 +141,20 @@ func main() {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		handleHealth(w, r, pool)
 	})
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "redis:6379"
+	}
+	inspector := asynq.NewInspector(asynq.RedisClientOpt{Addr: redisAddr})
+	mux.HandleFunc("GET /api/ops/queues", func(w http.ResponseWriter, r *http.Request) {
+		handleOpsQueues(w, r, inspector)
+	})
+	mux.HandleFunc("GET /api/ops/failed", func(w http.ResponseWriter, r *http.Request) {
+		handleOpsFailed(w, r, inspector)
+	})
+	mux.HandleFunc("GET /api/ops/collection", func(w http.ResponseWriter, r *http.Request) {
+		handleOpsCollection(w, r, pool)
+	})
 
 	// Serve React static files if web/dist exists.
 	if _, err := os.Stat("web/dist"); err == nil {
@@ -161,6 +176,138 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		http.Error(w, `{"error":"encode failed"}`, http.StatusInternalServerError)
 	}
+}
+
+// ── Ops dashboard (replaces asynqmon for day-to-day monitoring) ─────────
+
+type opsQueue struct {
+	Queue      string `json:"queue"`
+	Pending    int    `json:"pending"`
+	Active     int    `json:"active"`
+	Scheduled  int    `json:"scheduled"`
+	Retry      int    `json:"retry"`
+	Archived   int    `json:"archived"`
+	Processed  int    `json:"processed"`
+	Failed     int    `json:"failed"`
+	LastError  string `json:"last_error"`
+	LastFailed string `json:"last_failed_at"`
+}
+
+func handleOpsQueues(w http.ResponseWriter, r *http.Request, inspector *asynq.Inspector) {
+	names, err := inspector.Queues()
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("inspector queues: %v", err))
+		return
+	}
+	var out []opsQueue
+	for _, q := range names {
+		s, err := inspector.GetQueueInfo(q)
+		if err != nil {
+			continue
+		}
+		row := opsQueue{
+			Queue: q, Pending: s.Pending, Active: s.Active,
+			Scheduled: s.Scheduled, Retry: s.Retry, Archived: s.Archived,
+			Processed: s.Processed, Failed: s.Failed,
+		}
+		// Sample the archived queue to surface the most recent failure.
+		if s.Archived > 0 {
+			if tasks, err := inspector.ListArchivedTasks(q, asynq.PageSize(1)); err == nil && len(tasks) > 0 {
+				row.LastError = tasks[0].LastErr
+				row.LastFailed = tasks[0].LastFailedAt.Format(time.RFC3339)
+			}
+		}
+		out = append(out, row)
+	}
+	if out == nil {
+		out = []opsQueue{}
+	}
+	writeJSON(w, out)
+}
+
+type opsFailedTask struct {
+	ID          string `json:"id"`
+	Queue       string `json:"queue"`
+	Type        string `json:"type"`
+	Payload     string `json:"payload"`
+	LastError   string `json:"last_error"`
+	RetriesDone int    `json:"retries"`
+	LastFailed  string `json:"last_failed_at"`
+}
+
+func handleOpsFailed(w http.ResponseWriter, r *http.Request, inspector *asynq.Inspector) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	var out []opsFailedTask
+	// Retry tasks = failing but still trying; archived = retries exhausted.
+	for _, list := range []struct {
+		name string
+		fn   func(asynq.ListOption) ([]*asynq.TaskInfo, error)
+	}{
+		{"retry", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListRetryTasks("default", o) }},
+		{"archived", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListArchivedTasks("default", o) }},
+	} {
+		tasks, err := list.fn(asynq.PageSize(limit))
+		if err != nil {
+			continue
+		}
+		for _, t := range tasks {
+			out = append(out, opsFailedTask{
+				ID: t.ID, Queue: "default", Type: t.Type,
+				Payload: string(t.Payload), LastError: t.LastErr,
+				RetriesDone: t.Retried, LastFailed: t.LastFailedAt.Format(time.RFC3339),
+			})
+		}
+	}
+	if out == nil {
+		out = []opsFailedTask{}
+	}
+	writeJSON(w, out)
+}
+
+type opsCollection struct {
+	EventsLastHour      int     `json:"events_last_hour"`
+	DistinctStations    int     `json:"stations_scraped_last_hour"`
+	TotalStations       int     `json:"total_stations"`
+	NoIrisStations      int     `json:"no_iris_stations"`
+	PendingStations     int     `json:"pending_stations"`
+	EventsPerMinute    float64 `json:"events_per_minute"`
+	PunctualPct        float64 `json:"punctual_pct"`
+	CancelledPct        float64 `json:"cancelled_pct"`
+	AvgSnapsPerStop     float64 `json:"avg_snaps_per_stop"`
+	OldestEvent         string  `json:"oldest_event"`
+	DBSize              string  `json:"db_size"`
+}
+
+func handleOpsCollection(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
+	var c opsCollection
+	err := pool.QueryRow(r.Context(), `
+		SELECT
+		  (SELECT count(*) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'),
+		  (SELECT count(DISTINCT station_eva) FROM scrape_runs WHERE scraped_at > NOW() - INTERVAL '1 hour'),
+		  (SELECT count(*) FROM stations),
+		  (SELECT count(*) FROM stations WHERE no_iris),
+		  (SELECT count(*) FROM pending_stations),
+		  (SELECT count(*) FILTER (WHERE NOT cancelled AND ABS(EXTRACT(EPOCH FROM (actual_time-planned_time))/60) < 2))::float
+		   / GREATEST((SELECT count(*) FILTER (WHERE actual_time IS NOT NULL) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'), 1) * 100,
+		  (SELECT count(*) FILTER (WHERE cancelled))::float
+		   / GREATEST((SELECT count(*) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'), 1) * 100,
+		  (SELECT avg(n)::float FROM (SELECT count(*) AS n FROM stop_events GROUP BY stop_id, direction) x),
+		  (SELECT min(scraped_at)::text FROM stop_events),
+		  (SELECT pg_size_pretty(pg_database_size(current_database())))`).
+		Scan(&c.EventsLastHour, &c.DistinctStations, &c.TotalStations, &c.NoIrisStations,
+			&c.PendingStations, &c.PunctualPct, &c.CancelledPct, &c.AvgSnapsPerStop,
+			&c.OldestEvent, &c.DBSize)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("query ops collection: %v", err))
+		return
+	}
+	c.EventsPerMinute = float64(c.EventsLastHour) / 60.0
+	writeJSON(w, c)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {
