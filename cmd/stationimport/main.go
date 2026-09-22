@@ -85,19 +85,31 @@ func importFromStada(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	log.Printf("[stationimport] StaDa returned %d stations", len(stations))
 
-	rows := make([]stationRow, 0, len(stations))
+	rows := make([]stationRow, 0, len(stations)*2)
 	for _, st := range stations {
-		eva := st.MainEVA()
-		if eva == "" || st.Name == "" {
+		if st.Name == "" || len(st.EVANumbers) == 0 {
 			continue
 		}
 		cat := st.Category
-		row := stationRow{Eva: eva, Name: st.Name, Cat: &cat, State: &st.FederalState}
-		if lat, lon, ok := st.LatLon(); ok {
-			row.Lat = &lat
-			row.Lon = &lon
+		for i, eva := range st.EVANumbers {
+			if eva.Number <= 0 {
+				continue
+			}
+			row := stationRow{
+				Eva:   fmt.Sprintf("%d", eva.Number),
+				Name:  st.Name,
+				Cat:   &cat,
+				State: &st.FederalState,
+			}
+			// Coordinates from the isMain EVA (or the first that has them).
+			if eva.IsMain || i == 0 {
+				if lat, lon, ok := st.LatLon(); ok {
+					row.Lat = &lat
+					row.Lon = &lon
+				}
+			}
+			rows = append(rows, row)
 		}
-		rows = append(rows, row)
 	}
 	return upsertStations(ctx, pool, rows)
 }
@@ -165,6 +177,13 @@ func upsertStations(ctx context.Context, pool *pgxpool.Pool, rows []stationRow) 
 	}
 	defer tx.Rollback(ctx)
 
+	// Multi-EVA stations share one name → identical slugs. Make each slug
+	// unique by appending the EVA on collision ("berlin-hauptbahnhof" for the
+	// first EVA, "berlin-hauptbahnhof-8098160" for the next). Collision order
+	// is deterministic: isMain comes first in the StaDa evaNumbers array
+	// (importFromStada emits it first), so the isMain row keeps the clean slug.
+	seenSlugs := map[string]bool{}
+
 	upsert := `
 INSERT INTO stations (eva, name, slug, category, lat, lon, federal_state, fetch_offset, discovered_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
@@ -178,6 +197,14 @@ ON CONFLICT (eva) DO UPDATE SET
 
 	for _, r := range rows {
 		slug := shared.Slugify(r.Name)
+		if slug == "" {
+			slug = r.Eva
+		}
+		if seenSlugs[slug] {
+			slug = slug + "-" + r.Eva
+		}
+		seenSlugs[slug] = true
+
 		_, err := tx.Exec(ctx, upsert,
 			r.Eva, r.Name, slug, r.Cat, r.Lat, r.Lon, r.State,
 			shared.FetchOffset(slug)%cadence,

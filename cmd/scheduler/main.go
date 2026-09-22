@@ -104,7 +104,7 @@ func tick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, cadence
 		return
 	}
 	slot := int(time.Now().Unix() / 60) % cadence
-	rows, err := pool.Query(ctx, "SELECT eva FROM stations WHERE fetch_offset = $1", slot)
+	rows, err := pool.Query(ctx, "SELECT eva FROM stations WHERE fetch_offset = $1 AND NOT no_iris", slot)
 	if err != nil {
 		log.Printf("WARN tick query: %v", err)
 		return
