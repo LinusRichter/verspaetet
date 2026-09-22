@@ -47,6 +47,9 @@ services:
 
   # asynqmon â€” web UI for the asynq job queue.
   asynqmon:
+    # Disabled by default — the ops dashboard at :8080/ops replaces it for
+    # day-to-day monitoring. Start ad hoc with: docker compose --profile asynqmon up asynqmon
+    profiles: ["asynqmon"]
     image: hibiken/asynqmon:latest
     restart: unless-stopped
     logging: *default-logging

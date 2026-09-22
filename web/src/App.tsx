@@ -27,7 +27,7 @@ function App() {
         <StatsBar />
         <div className="top-bar-right">
           <HealthBadge />
-          <a href={`http://${window.location.hostname}:8081`} target="_blank" rel="noopener noreferrer" className="ui-link">asynqmon</a>
+          <a href="/ops" className="ui-link">ops</a>
         </div>
       </div>
       <div className="main-layout">
