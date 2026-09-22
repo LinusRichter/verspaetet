@@ -93,6 +93,18 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 			return fmt.Errorf("fetch %s: %w", p.Eva, err)
 		}
 
+		// Empty board: IRIS knows the station but has no timetable data
+		// (200 + <timetable/>, 13 bytes). These stations can never yield
+		// events — mark them so the scheduler stops wasting slots.
+		if len(result.Events) == 0 {
+			if _, uerr := pool.Exec(ctx,
+				"UPDATE stations SET no_iris = true WHERE eva = $1", p.Eva); uerr != nil {
+				log.Printf("WARN mark no_iris(empty) %s: %v", p.Eva, uerr)
+			}
+			log.Printf("empty board %s (marked no_iris)", p.Eva)
+			return fmt.Errorf("empty board %s: %w", p.Eva, asynq.SkipRetry)
+		}
+
 		// Split into per-direction batches (scrape_runs is direction-keyed).
 		arrivals := make([]shared.StopEvent, 0, len(result.Events)/2)
 		departures := make([]shared.StopEvent, 0, len(result.Events)/2)
