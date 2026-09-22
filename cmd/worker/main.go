@@ -94,15 +94,25 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 		}
 
 		// Empty board: IRIS knows the station but has no timetable data
-		// (200 + <timetable/>, 13 bytes). These stations can never yield
-		// events — mark them so the scheduler stops wasting slots.
+		// (200 + <timetable/>, 13 bytes). If the station has NEVER yielded
+		// events, it is permanently empty — mark it so the scheduler stops
+		// wasting slots. A station with prior data gets a transient empty
+		// board sometimes (froendenberg-froemern, day one); those must NOT
+		// be marked — treat as a normal empty fetch.
 		if len(result.Events) == 0 {
-			if _, uerr := pool.Exec(ctx,
-				"UPDATE stations SET no_iris = true WHERE eva = $1", p.Eva); uerr != nil {
-				log.Printf("WARN mark no_iris(empty) %s: %v", p.Eva, uerr)
+			var prior int
+			if qerr := pool.QueryRow(ctx,
+				"SELECT count(*) FROM stop_events WHERE station_eva = $1", p.Eva).Scan(&prior); qerr == nil && prior == 0 {
+				if _, uerr := pool.Exec(ctx,
+					"UPDATE stations SET no_iris = true WHERE eva = $1", p.Eva); uerr != nil {
+					log.Printf("WARN mark no_iris(empty) %s: %v", p.Eva, uerr)
+				}
+				log.Printf("empty board %s (marked no_iris)", p.Eva)
+			} else {
+				log.Printf("empty board %s (transient, prior events — not marked)", p.Eva)
 			}
-			log.Printf("empty board %s (marked no_iris)", p.Eva)
-			return fmt.Errorf("empty board %s: %w", p.Eva, asynq.SkipRetry)
+			// Nothing to persist; end the task successfully.
+			return nil
 		}
 
 		// Split into per-direction batches (scrape_runs is direction-keyed).
