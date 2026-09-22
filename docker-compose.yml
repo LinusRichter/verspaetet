@@ -93,7 +93,7 @@ services:
       - STADA_CLIENT_ID=${STADA_CLIENT_ID}
       - STADA_API_KEY=${STADA_API_KEY}
       - STADA_RATE_LIMIT=${STADA_RATE_LIMIT:-1}
-      - CADENCE_MINUTES=${CADENCE_MINUTES:-30}
+      - CADENCE_MINUTES=${CADENCE_MINUTES:-40}
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,6 +107,7 @@ services:
       context: .
       dockerfile_inline: |
         FROM golang:alpine
+        RUN apk add --no-cache git
         WORKDIR /app
         COPY . .
         RUN go mod download
@@ -120,10 +121,14 @@ services:
       - IRIS_CLIENT_ID=${IRIS_CLIENT_ID}
       - IRIS_API_KEY=${IRIS_API_KEY}
       - IRIS_RATE_LIMIT=${IRIS_RATE_LIMIT:-60}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_REPO=${HF_REPO:-}
+      - DOWNTIMES_DIR=/downtimes
       - ASYNQ_CONCURRENCY=10
       - EXPORTS_DIR=/exports
     volumes:
       - verspaetet_exports:/exports
+      - verspaetet_downtimes:/downtimes
     depends_on:
       redis:
         condition: service_healthy
@@ -149,7 +154,7 @@ services:
     environment:
       - REDIS_ADDR=redis:6379
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
-      - CADENCE_MINUTES=${CADENCE_MINUTES:-30}
+      - CADENCE_MINUTES=${CADENCE_MINUTES:-40}
     depends_on:
       redis:
         condition: service_healthy
@@ -193,3 +198,4 @@ volumes:
     name: bahn-downfall_bahn_downfall_pg
   verspaetet_redis:
   verspaetet_exports:
+  verspaetet_downtimes:

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"verspaetet/activities"
@@ -39,7 +41,7 @@ func main() {
 	processor := &activities.Process{Pool: pool}
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, dryRun))
+	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, pool, dryRun))
 	mux.HandleFunc(asynqtasks.TypeStationResolve, makeStationResolveHandler(processor))
 	mux.HandleFunc(asynqtasks.TypeExportMonth, makeExportMonthHandler(pool))
 
@@ -61,7 +63,7 @@ func main() {
 // makeBoardFetchHandler fetches one station's complete board (both
 // directions, single IRIS pass) and persists it as two direction batches.
 // Unresolved route-path names become pending_stations rows (discovery).
-func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process, dryRun bool) func(context.Context, *asynq.Task) error {
+func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process, pool *pgxpool.Pool, dryRun bool) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
 		var p asynqtasks.BoardFetchPayload
 		if err := json.Unmarshal(t.Payload(), &p); err != nil {
@@ -78,6 +80,16 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 
 		result, err := iris.FetchStationBoard(ctx, p.Eva)
 		if err != nil {
+			// IRIS answers HTTP 400 for EVAs without an IRIS Betriebsstelle.
+			// Mark the station no_iris so the scheduler skips it from now on
+			// (no more wasted requests), then stop retrying this task.
+			if strings.Contains(err.Error(), "status 400") {
+				if _, uerr := pool.Exec(ctx,
+					"UPDATE stations SET no_iris = true WHERE eva = $1", p.Eva); uerr != nil {
+					log.Printf("WARN mark no_iris %s: %v", p.Eva, uerr)
+				}
+				return fmt.Errorf("iris 400 (marked no_iris): %s: %w", p.Eva, asynq.SkipRetry)
+			}
 			return fmt.Errorf("fetch %s: %w", p.Eva, err)
 		}
 
@@ -128,12 +140,23 @@ func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Tas
 		}
 		outDir := envOr("EXPORTS_DIR", "/exports")
 		schema := envOr("DATASET_SCHEMA_VERSION", "v0.1-beta")
-		m, err := activities.ExportMonth(ctx, pool, outDir, p.Year, p.Month, schema)
+		chunkName := fmt.Sprintf("%04d-%02d", p.Year, p.Month)
+		m, err := activities.ExportMonth(ctx, pool, filepath.Join(outDir, chunkName), p.Year, p.Month, schema)
 		if err != nil {
-			return fmt.Errorf("export %d-%02d: %w", p.Year, p.Month, err)
+			return fmt.Errorf("export %s: %w", chunkName, err)
 		}
-		log.Printf("export %d-%02d done: %d stop_events, %d stations, manifest at %s",
-			p.Year, p.Month, m.StopEvents.Rows, m.Stations.Rows, outDir)
+		log.Printf("export %s done: %d stop_events, %d stations, manifest at %s",
+			chunkName, m.StopEvents.Rows, m.Stations.Rows, outDir)
+
+		// Upload to HuggingFace (HF_TOKEN + HF_REPO env; skip silently when
+		// unset so local exports work without credentials).
+		if os.Getenv("HF_TOKEN") != "" && os.Getenv("HF_REPO") != "" {
+			if err := activities.UploadToHuggingFace(ctx, filepath.Join(outDir, chunkName)); err != nil {
+				return fmt.Errorf("hf upload %s: %w", chunkName, err)
+			}
+		} else {
+			log.Printf("HF_TOKEN/HF_REPO unset — chunk stays local in %s", outDir)
+		}
 		return nil
 	}
 }
