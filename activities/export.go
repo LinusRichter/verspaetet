@@ -48,13 +48,13 @@ type StopEventParquet struct {
 
 // StationParquet is the flat Parquet row schema for stations.
 type StationParquet struct {
-	Eva          string  `parquet:"eva"`
-	Slug         string  `parquet:"slug"`
-	Name         string  `parquet:"name"`
-	Category     *int32  `parquet:"category,optional"`
+	Eva          string   `parquet:"eva"`
+	Slug         string   `parquet:"slug"`
+	Name         string   `parquet:"name"`
+	Category     *int32   `parquet:"category,optional"`
 	Lat          *float64 `parquet:"lat,optional"`
 	Lon          *float64 `parquet:"lon,optional"`
-	FederalState *string `parquet:"federal_state,optional"`
+	FederalState *string  `parquet:"federal_state,optional"`
 }
 
 // Manifest describes one exported monthly chunk.

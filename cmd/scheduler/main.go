@@ -52,12 +52,12 @@ func main() {
 	// Tick once immediately, then every minute. lastSlot tracks the last
 	// processed slot so a stalled or sleeping process catches up missed
 	// slots on the next tick instead of losing coverage permanently.
-	lastSlot := int(time.Now().Unix() / 60) % cadence
+	lastSlot := int(time.Now().Unix()/60) % cadence
 	tick(ctx, pool, client, cadence, dryRun, lastSlot)
 	for {
 		select {
 		case <-ticker.C:
-			cur := int(time.Now().Unix() / 60) % cadence
+			cur := int(time.Now().Unix()/60) % cadence
 			if cur != lastSlot {
 				// Catch up: all slots after lastSlot up to and including cur
 				// (mod cadence), in order. Covers ticks lost to stalls.
@@ -128,7 +128,7 @@ func tick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, cadence
 		return
 	}
 	if len(slots) == 0 {
-		slots = []int{int(time.Now().Unix() / 60) % cadence}
+		slots = []int{int(time.Now().Unix()/60) % cadence}
 	}
 	for _, slot := range slots {
 		runTick(ctx, pool, client, slot)

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -20,10 +20,11 @@ import (
 )
 
 // Usage:
-//   seeder migrate up                 apply all pending up-migrations
-//   seeder migrate down [N]           rollback the last N migrations
-//   seeder --eva=<eva>                enqueue one board fetch (both directions)
-//   seeder                            enqueue a board:fetch for all stations
+//
+//	seeder migrate up                 apply all pending up-migrations
+//	seeder migrate down [N]           rollback the last N migrations
+//	seeder --eva=<eva>                enqueue one board fetch (both directions)
+//	seeder                            enqueue a board:fetch for all stations
 //
 // Periodic monitoring is handled by cmd/scheduler — the seeder is only for
 // manual one-offs and initial dispatch.

@@ -24,7 +24,7 @@ type BoardFetchPayload struct {
 // StationResolvePayload records unresolved route-path names.
 type StationResolvePayload struct {
 	Names    []string `json:"names"`
-	SeenFrom string    `json:"seen_from"`
+	SeenFrom string   `json:"seen_from"`
 }
 
 // ExportMonthPayload exports one operating month to Parquet + manifest.

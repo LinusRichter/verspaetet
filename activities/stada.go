@@ -18,18 +18,18 @@ import (
 // StadaStation is one station from the StaDa /stations response.
 // The live API wraps each item in {"Station": {...}}.
 type StadaStation struct {
-	Number       int64       `json:"number"`
-	Name         string      `json:"name"`
-	Category     int32       `json:"category"`
-	FederalState string      `json:"federalState"`
-	EVANumbers   []StadaEVA  `json:"evaNumbers"`
+	Number       int64      `json:"number"`
+	Name         string     `json:"name"`
+	Category     int32      `json:"category"`
+	FederalState string     `json:"federalState"`
+	EVANumbers   []StadaEVA `json:"evaNumbers"`
 }
 
 // StadaEVA is one EVA number of a station (isMain marks the canonical one).
 type StadaEVA struct {
-	Number int64            `json:"number"`
-	IsMain bool             `json:"isMain"`
-	Coords *StadaGeoPoint   `json:"geographicCoordinates"`
+	Number int64          `json:"number"`
+	IsMain bool           `json:"isMain"`
+	Coords *StadaGeoPoint `json:"geographicCoordinates"`
 }
 
 // StadaGeoPoint is GeoJSON: coordinates are [lon, lat] — ORDER MATTERS.
@@ -42,8 +42,8 @@ type StadaGeoPoint struct {
 // directly in result[]; some environments/historic versions wrap each item
 // in {"Station": {...}} — we decode both shapes via a raw-first pass.
 type stadaResponse struct {
-	Total  int64           `json:"total"`
-	Result []stadaItem     `json:"result"`
+	Total  int64       `json:"total"`
+	Result []stadaItem `json:"result"`
 }
 
 // stadaItem decodes EITHER the bare station object OR the {"Station": {...}}

@@ -50,7 +50,7 @@ func main() {
 		Queues: map[string]int{
 			asynqtasks.QueueDiscovery: 10,
 			asynqtasks.QueueDefault:   5,
-			asynqtasks.QueueExport:   1,
+			asynqtasks.QueueExport:    1,
 		},
 	})
 

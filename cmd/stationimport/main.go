@@ -22,10 +22,10 @@ import (
 // scheduler and the resolver for discovery.
 //
 // Sources (in order):
-//   1. StaDa API (default): one call, all active stations (category 1-7),
-//      incl. lat/lon + federal state. Terms: ~1 call/day — run periodically.
-//   2. --csv=<file>: fallback import from a dumped stations table
-//      (eva,name[,category]) — e.g. extracted from the old DB on the server.
+//  1. StaDa API (default): one call, all active stations (category 1-7),
+//     incl. lat/lon + federal state. Terms: ~1 call/day — run periodically.
+//  2. --csv=<file>: fallback import from a dumped stations table
+//     (eva,name[,category]) — e.g. extracted from the old DB on the server.
 //
 // In both cases:
 //   - slug = shared.Slugify(name), fetch_offset = shared.FetchOffset(slug)
@@ -34,8 +34,9 @@ import (
 //     resolved (deleted) when found — this is the discovery loop's exit.
 //
 // Usage:
-//   stationimport                 # StaDa import
-//   stationimport --csv=dump.csv  # CSV fallback
+//
+//	stationimport                 # StaDa import
+//	stationimport --csv=dump.csv  # CSV fallback
 func main() {
 	csvPath := flag.String("csv", "", "import from CSV (eva,name[,category]) instead of StaDa")
 	resolveOnly := flag.Bool("resolve-only", false, "only resolve pending station names against StaDa (skips the full import)")
@@ -78,12 +79,12 @@ func main() {
 
 // stationRow is the normalized insert unit for both sources.
 type stationRow struct {
-	Eva     string
-	Name    string
-	Cat     *int32
-	Lat     *float64
-	Lon     *float64
-	State   *string
+	Eva   string
+	Name  string
+	Cat   *int32
+	Lat   *float64
+	Lon   *float64
+	State *string
 }
 
 func importFromStada(ctx context.Context, pool *pgxpool.Pool) error {

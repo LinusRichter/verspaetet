@@ -45,17 +45,17 @@ func parseIrisTime(s string) (time.Time, error) {
 
 // Timetable is the root <timetable> element of plan/fchg/rchg responses.
 type Timetable struct {
-	XMLName  xml.Name  `xml:"timetable"`
-	Eva      string    `xml:"eva,attr"`
-	Station  string    `xml:"station,attr"`
-	Stops    []IrisStop `xml:"s"`
+	XMLName xml.Name   `xml:"timetable"`
+	Eva     string     `xml:"eva,attr"`
+	Station string     `xml:"station,attr"`
+	Stops   []IrisStop `xml:"s"`
 }
 
 // IrisStop is one <s> timetable-stop element. ar/dp are optional (pointer).
 type IrisStop struct {
-	Eva string    `xml:"eva,attr"`
-	ID  string    `xml:"id,attr"`
-	TL  TripLabel `xml:"tl"`
+	Eva string     `xml:"eva,attr"`
+	ID  string     `xml:"id,attr"`
+	TL  TripLabel  `xml:"tl"`
 	AR  *IrisEvent `xml:"ar"`
 	DP  *IrisEvent `xml:"dp"`
 }
@@ -77,7 +77,7 @@ type IrisEvent struct {
 	PP   string `xml:"pp,attr"`   // planned platform
 	PPTH string `xml:"ppth,attr"` // planned path, pipe-separated names
 	PS   string `xml:"ps,attr"`   // planned status: p/a/c
-	PDE  string `xml:"pde,attr"` // planned distant endpoint
+	PDE  string `xml:"pde,attr"`  // planned distant endpoint
 	CT   string `xml:"ct,attr"`   // changed time
 	CP   string `xml:"cp,attr"`   // changed platform
 	CPTH string `xml:"cpth,attr"` // changed path

@@ -152,7 +152,7 @@ func TestSplitLineLabel(t *testing.T) {
 		{"ICE577", "ICE", "577"},
 		{"S8", "S", "8"},
 		{"RE60", "RE", "60"},
-		{"34", "", "34"},   // pure digits — no category
+		{"34", "", "34"}, // pure digits — no category
 		{"MEX90212a", "MEX", "90212a"},
 	}
 	for _, tt := range tests {

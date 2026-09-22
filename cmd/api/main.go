@@ -17,14 +17,14 @@ import (
 )
 
 type stationRow struct {
-	Eva          string  `json:"eva"`
-	Slug         string  `json:"slug"`
-	Name         string  `json:"name"`
-	Category     *int    `json:"category"`
+	Eva          string   `json:"eva"`
+	Slug         string   `json:"slug"`
+	Name         string   `json:"name"`
+	Category     *int     `json:"category"`
 	Lat          *float64 `json:"lat"`
 	Lon          *float64 `json:"lon"`
-	FederalState *string `json:"federal_state"`
-	StopEvents   int     `json:"stop_events"`
+	FederalState *string  `json:"federal_state"`
+	StopEvents   int      `json:"stop_events"`
 }
 
 type lineRow struct {
@@ -35,22 +35,22 @@ type lineRow struct {
 }
 
 type eventRow struct {
-	ID            int64      `json:"id"`
-	Direction     string     `json:"direction"`
-	LineCategory  string     `json:"line_category"`
-	TrainNumber   string     `json:"train_number"`
-	Owner         *string    `json:"owner"`
-	StopID        string     `json:"stop_id"`
-	DirectionName *string    `json:"direction_name"`
-	ViaPath       []string   `json:"via_path"`
-	PlannedTime   time.Time  `json:"planned_time"`
-	ActualTime    *time.Time `json:"actual_time"`
-	DelayS        *int       `json:"delay_s"`
-	Platform      *string    `json:"platform"`
-	PlannedPlatform *string  `json:"planned_platform"`
-	Cancelled     bool       `json:"cancelled"`
-	ScrapedAt     time.Time  `json:"scraped_at"`
-	StationName   *string    `json:"station_name"`
+	ID              int64      `json:"id"`
+	Direction       string     `json:"direction"`
+	LineCategory    string     `json:"line_category"`
+	TrainNumber     string     `json:"train_number"`
+	Owner           *string    `json:"owner"`
+	StopID          string     `json:"stop_id"`
+	DirectionName   *string    `json:"direction_name"`
+	ViaPath         []string   `json:"via_path"`
+	PlannedTime     time.Time  `json:"planned_time"`
+	ActualTime      *time.Time `json:"actual_time"`
+	DelayS          *int       `json:"delay_s"`
+	Platform        *string    `json:"platform"`
+	PlannedPlatform *string    `json:"planned_platform"`
+	Cancelled       bool       `json:"cancelled"`
+	ScrapedAt       time.Time  `json:"scraped_at"`
+	StationName     *string    `json:"station_name"`
 }
 
 type topDelayRow struct {
