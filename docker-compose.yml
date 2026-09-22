@@ -80,6 +80,11 @@ services:
   # discovery names. Re-run any time; StaDa terms allow ~1 call/day.
   # CSV fallback: command: ["/app/bin/stationimport", "--csv=/stations.csv"]
   stationimport:
+    # One-shot StaDa import/resolve. Behind a profile so routine deploys do
+    # NOT burn a StaDa call (terms: ~1 call/day per key). Run explicitly:
+    #   docker compose --profile stada run --rm stationimport
+    #   docker compose --profile stada run --rm stationimport --resolve-only
+    profiles: ["stada"]
     build:
       context: .
       dockerfile_inline: |

@@ -38,6 +38,7 @@ import (
 //   stationimport --csv=dump.csv  # CSV fallback
 func main() {
 	csvPath := flag.String("csv", "", "import from CSV (eva,name[,category]) instead of StaDa")
+	resolveOnly := flag.Bool("resolve-only", false, "only resolve pending station names against StaDa (skips the full import)")
 	flag.Parse()
 
 	dsn := os.Getenv("POSTGRES_DSN")
@@ -53,11 +54,18 @@ func main() {
 	}
 	defer pool.Close()
 
-	if *csvPath != "" {
+	switch {
+	case *resolveOnly:
+		// Single StaDa call to resolve pending names, no full re-import.
+		if err := resolvePending(ctx, pool); err != nil {
+			log.Fatalln("resolve pending:", err)
+		}
+		return
+	case *csvPath != "":
 		if err := importFromCSV(ctx, pool, *csvPath); err != nil {
 			log.Fatalln("CSV import:", err)
 		}
-	} else {
+	default:
 		if err := importFromStada(ctx, pool); err != nil {
 			log.Fatalln("StaDa import:", err)
 		}
