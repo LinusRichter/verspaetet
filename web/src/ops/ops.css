@@ -86,10 +86,49 @@ body {
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-size: 11px; font-weight: normal; text-transform: uppercase; }
+th, .info { cursor: help; }
 .row-warn td:first-child { color: var(--warn); }
 .mono { font-size: 11px; }
 .muted { color: var(--muted); }
 .err-text { color: var(--err); }
+
+/* hover-explanation marker */
+.info {
+  display: inline-block;
+  margin-left: 5px;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 9px;
+  cursor: help;
+}
+.info:hover { color: var(--accent); border-color: var(--accent); }
+
+/* state pills in failed table */
+.state-pill {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.pill-retry { background: #3a3020; color: var(--warn); }
+.pill-archived { background: #3a2020; color: var(--err); }
+
+/* health dot in top bar */
+.health-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 7px;
+}
+.dot-ok { background: var(--ok); }
+.dot-warn { background: var(--warn); }
 
 @media (max-width: 900px) {
   .ops-grid { grid-template-columns: 1fr; }

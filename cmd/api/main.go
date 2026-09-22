@@ -240,6 +240,7 @@ type opsFailedTask struct {
 	Payload     string `json:"payload"`
 	LastError   string `json:"last_error"`
 	RetriesDone int    `json:"retries"`
+	State       string `json:"state"` // "retry" (still trying) or "archived" (exhausted)
 	LastFailed  string `json:"last_failed_at"`
 }
 
@@ -253,11 +254,12 @@ func handleOpsFailed(w http.ResponseWriter, r *http.Request, inspector *asynq.In
 	var out []opsFailedTask
 	// Retry tasks = failing but still trying; archived = retries exhausted.
 	for _, list := range []struct {
-		name string
-		fn   func(asynq.ListOption) ([]*asynq.TaskInfo, error)
+		name  string
+		state string
+		fn    func(asynq.ListOption) ([]*asynq.TaskInfo, error)
 	}{
-		{"retry", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListRetryTasks("default", o) }},
-		{"archived", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListArchivedTasks("default", o) }},
+		{"retry", "retry", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListRetryTasks("default", o) }},
+		{"archived", "archived", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListArchivedTasks("default", o) }},
 	} {
 		tasks, err := list.fn(asynq.PageSize(limit))
 		if err != nil {
@@ -267,13 +269,18 @@ func handleOpsFailed(w http.ResponseWriter, r *http.Request, inspector *asynq.In
 			out = append(out, opsFailedTask{
 				ID: t.ID, Queue: "default", Type: t.Type,
 				Payload: string(t.Payload), LastError: t.LastErr,
-				RetriesDone: t.Retried, LastFailed: t.LastFailedAt.Format(time.RFC3339),
+				RetriesDone: t.Retried, State: list.state,
+				LastFailed: t.LastFailedAt.Format(time.RFC3339),
 			})
 		}
 	}
 	if out == nil {
 		out = []opsFailedTask{}
 	}
+	// Most recent failures first (across both states).
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].LastFailed > out[j].LastFailed
+	})
 	writeJSON(w, out)
 }
 

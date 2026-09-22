@@ -21,6 +21,7 @@ export interface OpsFailedTask {
   payload: string
   last_error: string
   retries: number
+  state: 'retry' | 'archived'
   last_failed_at: string
 }
 
