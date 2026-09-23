@@ -216,7 +216,7 @@ ON CONFLICT (eva) DO UPDATE SET
 
 		_, err := tx.Exec(ctx, upsert,
 			r.Eva, r.Name, slug, r.Cat, r.Lat, r.Lon, r.State,
-			shared.FetchOffset(slug)%cadence,
+			int(shared.FetchOffsetHash(slug)%uint64(cadence)),
 		)
 		if err != nil {
 			return fmt.Errorf("upsert %s (%s): %w", r.Eva, r.Name, err)

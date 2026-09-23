@@ -57,25 +57,24 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			cur := int(time.Now().Unix()/60) % cadence
-			if cur != lastSlot {
-				// Catch up: all slots after lastSlot up to and including cur
-				// (mod cadence), in order. Covers ticks lost to stalls.
-				missed := (cur - lastSlot + cadence) % cadence
-				if missed > cadence { // impossible, but be safe
-					missed = cadence
-				}
-				var catchUp []int
-				for i := 1; i <= missed; i++ {
-					catchUp = append(catchUp, (lastSlot+i)%cadence)
-				}
-				log.Printf("catching up %d missed slot(s): %v", missed, catchUp)
-				tick(ctx, pool, client, cadence, dryRun, catchUp...)
-				lastSlot = cur
+			cur := int(time.Now().Unix() / 60) % cadence
+			missed := (cur - lastSlot + cadence) % cadence
+			if missed == 0 {
+				// Ticker fired within the same slot (tick ran < 60s ago):
+				// nothing to do — that slot was just enqueued.
 				continue
 			}
+			// Enqueue every slot from lastSlot+1 through cur (usually just
+			// cur; a real stall catches up everything missed).
+			var slots []int
+			for i := missed - 1; i >= 0; i-- {
+				slots = append(slots, (cur-i+cadence)%cadence)
+			}
+			if missed > 1 {
+				log.Printf("catching up %d missed slot(s): last=%d cur=%d", missed, lastSlot, cur)
+			}
+			tick(ctx, pool, client, cadence, dryRun, slots...)
 			lastSlot = cur
-			tick(ctx, pool, client, cadence, dryRun, cur)
 			// Monthly dataset export: on the 4th of each month at 04:00 UTC
 			// export the PREVIOUS operating month (+3 days finality lag).
 			now := time.Now().UTC()

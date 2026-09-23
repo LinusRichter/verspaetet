@@ -32,10 +32,13 @@ func slugify(name string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// FetchOffset maps a key (slug) deterministically to a minute slot [0, 30).
-// FNV-1a: same key → same slot across restarts, giving an even fetch spread.
-func FetchOffset(key string) int {
+// FetchOffsetHash maps a key deterministically to a raw FNV-1a 64 hash.
+// Callers apply their own modulo (cadence) — never bake the modulo in here,
+// or `% cadence` at call sites becomes a no-op for cadence > 30 (the
+// 2026-09-23 incident: 10 of 40 slots stayed empty because the hash was
+// already reduced mod 30).
+func FetchOffsetHash(key string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(key))
-	return int(h.Sum64() % 30)
+	return h.Sum64()
 }
