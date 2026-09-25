@@ -8,6 +8,7 @@ package metrics
 
 import (
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -106,15 +107,24 @@ func Listen(addr string) {
 	if addr == "" {
 		return
 	}
-	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", Handler())
-	srv := &http.Server{Addr: addr, ReadHeaderTimeout: 5 * time.Second}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("metrics listener: %v", err)
+	}
+	log.Printf("metrics endpoint listening on %s", ln.Addr())
 	go func() {
-		log.Printf("metrics endpoint listening on %s", addr)
-		if err := srv.ListenAndServe(); err != nil {
+		if err := newServer().Serve(ln); err != nil {
 			log.Fatalf("metrics server: %v", err)
 		}
 	}()
+}
+
+// newServer builds the standalone metrics HTTP server (own mux — the
+// worker/scheduler have no other HTTP surface).
+func newServer() *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", Handler())
+	return &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 }
 
 // StartQueueCollector samples asynq queue statistics every interval and

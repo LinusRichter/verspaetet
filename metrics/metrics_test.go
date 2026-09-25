@@ -2,11 +2,49 @@ package metrics
 
 import (
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestListenServesMetrics(t *testing.T) {
+	IRISFetches.WithLabelValues("fchg", "ok").Inc()
+	// Grab a free port (listen + close), then use it for Listen().
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	Listen(fmt.Sprintf("127.0.0.1:%d", port))
+
+	// Wait for the goroutine to accept.
+	var resp *http.Response
+	for i := 0; i < 50; i++ {
+		r, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", port))
+		if err == nil {
+			resp = r
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if resp == nil {
+		t.Fatal("metrics endpoint never answered")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics = %d, want 200 (regression: mux not attached?)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "verspaetet_iris_fetch_total") {
+		t.Error("metrics body missing verspaetet_iris_fetch_total")
+	}
+}
 
 func TestHandlerExposesMetrics(t *testing.T) {
 	// Touch collectors so at least one series exists for each.
