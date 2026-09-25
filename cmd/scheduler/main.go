@@ -60,7 +60,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			cur := int(time.Now().Unix() / 60) % cadence
+			cur := int(time.Now().Unix()/60) % cadence
 			missed := (cur - lastSlot + cadence) % cadence
 			if missed == 0 {
 				// Ticker fired within the same slot (tick ran < 60s ago):

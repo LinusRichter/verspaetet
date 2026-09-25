@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestListenServesMetrics(t *testing.T) {
@@ -43,6 +45,45 @@ func TestListenServesMetrics(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "verspaetet_iris_fetch_total") {
 		t.Error("metrics body missing verspaetet_iris_fetch_total")
+	}
+}
+
+func TestStartTokenSampler(t *testing.T) {
+	IRISTokens.Set(0)
+	IRISTokensMax.Set(0)
+	// calls 1..3 publish real samples, afterwards the limiter reports (0, 0)
+	// (disabled). The gauge must publish the real value and then KEEP it.
+	calls := 0
+	StartTokenSampler(10*time.Millisecond, func() (float64, float64) {
+		calls++
+		if calls <= 3 {
+			return 23.5, 270
+		}
+		return 0, 0 // disabled limiter
+	})
+
+	// Wait until the sampler has published a real sample.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := testutil.ToFloat64(IRISTokens); got == 23.5 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := testutil.ToFloat64(IRISTokens); got != 23.5 {
+		t.Fatalf("sampler never published (tokens gauge = %v)", got)
+	}
+	if max := testutil.ToFloat64(IRISTokensMax); max != 270 {
+		t.Fatalf("tokens max gauge = %v, want 270", max)
+	}
+
+	// After the limiter reports (0, 0), the gauges must NOT be zeroed.
+	time.Sleep(100 * time.Millisecond)
+	if got := testutil.ToFloat64(IRISTokens); got != 23.5 {
+		t.Fatalf("tokens gauge = %v, want 23.5 (disabled limiter must not zero the gauge)", got)
+	}
+	if max := testutil.ToFloat64(IRISTokensMax); max != 270 {
+		t.Fatalf("max gauge = %v, want 270 after limiter disabled", max)
 	}
 }
 

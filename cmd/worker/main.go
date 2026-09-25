@@ -41,9 +41,12 @@ func main() {
 	iris := &activities.Iris{}
 	processor := &activities.Process{Pool: pool}
 
-	// Metrics endpoint + asynq queue gauges (sampled every 15s).
+	// Metrics endpoint + asynq queue gauges (sampled every 15s) + continuous
+	// IRIS rate-limit bucket sampling (every 5s — the post-fetch snapshot
+	// flattered to zero under burst load).
 	metrics.Listen(envOr("METRICS_ADDR", ":9091"))
 	metrics.StartQueueCollector(redisAddr, 15*time.Second)
+	metrics.StartTokenSampler(5*time.Second, activities.IRISTokenSnapshot)
 
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, pool, dryRun))
@@ -107,10 +110,10 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 
 		// Empty board: IRIS knows the station but has no timetable data
 		// (200 + <timetable/>, 13 bytes). If the station has NEVER yielded
-			// events, it is permanently empty — mark it so the scheduler stops
-			// wasting slots. A station with prior data gets a transient empty
-			// board sometimes (froendenberg-froemern, day one); those must NOT
-			// be marked — treat as a normal empty fetch.
+		// events, it is permanently empty — mark it so the scheduler stops
+		// wasting slots. A station with prior data gets a transient empty
+		// board sometimes (froendenberg-froemern, day one); those must NOT
+		// be marked — treat as a normal empty fetch.
 		if len(stationResult.Events) == 0 {
 			result = "empty_board"
 			var prior int

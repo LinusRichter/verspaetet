@@ -166,7 +166,6 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	}
 }
 
-
 func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

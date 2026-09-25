@@ -35,9 +35,9 @@ var IRISFetchDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 10, 30},
 }, []string{"endpoint"})
 
-// IRISTokens / IRISTokensMax snapshot the shared token bucket after each
-// fetch (see ratelimit.Limiter.Tokens). Snapshot-per-fetch is accurate
-// enough to show how close the fleet is to the request budget.
+// IRISTokens / IRISTokensMax are published continuously by
+// StartTokenSampler (worker), so the gauge reflects the bucket level over
+// time instead of the post-burst moment after each fetch.
 var (
 	IRISTokens = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "verspaetet_iris_ratelimit_tokens",
@@ -48,6 +48,25 @@ var (
 		Help: "IRIS rate-limit bucket capacity (requests/minute).",
 	})
 )
+
+// StartTokenSampler samples the rate-limit bucket every interval via the
+// provided snapshot function and publishes the gauges. Skips samples with
+// max == 0 (limiter disabled) so the gauges keep their last real value.
+func StartTokenSampler(interval time.Duration, snapshot func() (tokens, max float64)) {
+	if snapshot == nil || interval <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for range t.C {
+			if tok, mx := snapshot(); mx > 0 {
+				IRISTokens.Set(tok)
+				IRISTokensMax.Set(mx)
+			}
+		}
+	}()
+}
 
 // ── Persistence (activities/process.go) ───────────────────────────────────
 
@@ -163,4 +182,3 @@ func collectQueues(inspector *asynq.Inspector) {
 		QueueTasks.WithLabelValues(q, "archived").Set(float64(s.Archived))
 	}
 }
-

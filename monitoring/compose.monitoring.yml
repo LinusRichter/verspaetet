@@ -71,9 +71,10 @@ services:
       - /:/host:ro
       - ./textfile:/textfile
 
-  # Per-container CPU/memory metrics.
+  # Per-container CPU/memory metrics. v0.60+ supports Docker's containerd
+  # snapshotter (Docker 28+ uses it — /var/lib/docker legacy layout is gone).
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    image: gcr.io/cadvisor/cadvisor:v0.60.6
     restart: unless-stopped
     logging: *default-logging
     privileged: true

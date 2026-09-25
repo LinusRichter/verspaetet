@@ -141,6 +141,13 @@ func irisEndpointLabel(path string) string {
 	}
 }
 
+// IRISTokenSnapshot returns the current (tokens, capacity) of the shared
+// IRIS rate-limit bucket, for monitoring. (0, 0) when the limiter is
+// disabled (IRIS_RATE_LIMIT unset).
+func IRISTokenSnapshot() (float64, float64) {
+	return irisLimiter.Tokens()
+}
+
 // irisGet fetches and decodes a <timetable> XML document from one endpoint.
 func irisGet(ctx context.Context, path string) (*Timetable, error) {
 	endpoint := irisEndpointLabel(path)
@@ -150,12 +157,6 @@ func irisGet(ctx context.Context, path string) (*Timetable, error) {
 		metrics.IRISFetches.WithLabelValues(endpoint, "limiter").Inc()
 		metrics.IRISFetchDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 		return nil, fmt.Errorf("iris rate limiter: %w", err)
-	}
-	// Snapshot the token bucket right after the wait (it was just refilled
-	// and decremented) so the dashboard shows how close to the budget we are.
-	if tokens, max := irisLimiter.Tokens(); max > 0 {
-		metrics.IRISTokens.Set(tokens)
-		metrics.IRISTokensMax.Set(max)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, irisBaseURL()+path, nil)
 	if err != nil {
