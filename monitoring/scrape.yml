@@ -1,0 +1,24 @@
+# VictoriaMetrics scrape config (Prometheus format).
+# Targets are docker-compose service names on the shared project network.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # verspaetet app metrics (worker/scheduler listeners + api mux).
+  - job_name: verspaetet
+    static_configs:
+      - targets:
+          - worker:9091
+          - scheduler:9091
+          - api:8080
+
+  # Host metrics (Linux: rootfs via /host bind mount).
+  - job_name: node
+    static_configs:
+      - targets: ["node_exporter:9100"]
+
+  # Per-container metrics.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

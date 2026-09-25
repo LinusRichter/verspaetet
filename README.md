@@ -36,7 +36,7 @@ docker compose up -d
 
 UIs:
 - Monitor UI: `http://localhost:8080`
-- Ops dashboard: `http://localhost:8080/ops`
+- Ops dashboard (Grafana): `http://localhost:8082`
 
 ## Data model
 

@@ -1,0 +1,3 @@
+# Prometheus textfile collector directory.
+# Backup/cron jobs drop *.prom files here (one metric per line), e.g.:
+#   verspaetet_backup_last_success_timestamp 1700000000

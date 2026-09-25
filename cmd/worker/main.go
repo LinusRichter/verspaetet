@@ -12,6 +12,7 @@ import (
 
 	"verspaetet/activities"
 	asynqtasks "verspaetet/asynqtasks"
+	"verspaetet/metrics"
 	"verspaetet/shared"
 
 	"github.com/hibiken/asynq"
@@ -40,6 +41,10 @@ func main() {
 	iris := &activities.Iris{}
 	processor := &activities.Process{Pool: pool}
 
+	// Metrics endpoint + asynq queue gauges (sampled every 15s).
+	metrics.Listen(envOr("METRICS_ADDR", ":9091"))
+	metrics.StartQueueCollector(redisAddr, 15*time.Second)
+
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(asynqtasks.TypeBoardFetch, makeBoardFetchHandler(iris, processor, pool, dryRun))
 	mux.HandleFunc(asynqtasks.TypeStationResolve, makeStationResolveHandler(processor))
@@ -65,25 +70,32 @@ func main() {
 // Unresolved route-path names become pending_stations rows (discovery).
 func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process, pool *pgxpool.Pool, dryRun bool) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
+		result := "ok"
+		defer func() { metrics.WorkerTasks.WithLabelValues("board:fetch", result).Inc() }()
 		var p asynqtasks.BoardFetchPayload
 		if err := json.Unmarshal(t.Payload(), &p); err != nil {
+			result = "bad_payload"
 			return fmt.Errorf("unmarshal payload: %v: %w", err, asynq.SkipRetry)
 		}
 		if p.Eva == "" {
+			result = "bad_payload"
 			return fmt.Errorf("empty eva: %w", asynq.SkipRetry)
 		}
 
 		if dryRun {
+			result = "dry_run"
 			log.Printf("DRY-RUN board:fetch %s (skipping fetch)", p.Eva)
 			return nil
 		}
 
-		result, err := iris.FetchStationBoard(ctx, p.Eva)
+		stationResult, err := iris.FetchStationBoard(ctx, p.Eva)
 		if err != nil {
+			result = "fetch_error"
 			// IRIS answers HTTP 400 for EVAs without an IRIS Betriebsstelle.
 			// Mark the station no_iris so the scheduler skips it from now on
 			// (no more wasted requests), then stop retrying this task.
 			if strings.Contains(err.Error(), "status 400") {
+				result = "no_iris"
 				if _, uerr := pool.Exec(ctx,
 					"UPDATE stations SET no_iris = true WHERE eva = $1", p.Eva); uerr != nil {
 					log.Printf("WARN mark no_iris %s: %v", p.Eva, uerr)
@@ -95,14 +107,16 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 
 		// Empty board: IRIS knows the station but has no timetable data
 		// (200 + <timetable/>, 13 bytes). If the station has NEVER yielded
-		// events, it is permanently empty — mark it so the scheduler stops
-		// wasting slots. A station with prior data gets a transient empty
-		// board sometimes (froendenberg-froemern, day one); those must NOT
-		// be marked — treat as a normal empty fetch.
-		if len(result.Events) == 0 {
+			// events, it is permanently empty — mark it so the scheduler stops
+			// wasting slots. A station with prior data gets a transient empty
+			// board sometimes (froendenberg-froemern, day one); those must NOT
+			// be marked — treat as a normal empty fetch.
+		if len(stationResult.Events) == 0 {
+			result = "empty_board"
 			var prior int
 			if qerr := pool.QueryRow(ctx,
 				"SELECT count(*) FROM stop_events WHERE station_eva = $1", p.Eva).Scan(&prior); qerr == nil && prior == 0 {
+				result = "no_iris"
 				if _, uerr := pool.Exec(ctx,
 					"UPDATE stations SET no_iris = true WHERE eva = $1", p.Eva); uerr != nil {
 					log.Printf("WARN mark no_iris(empty) %s: %v", p.Eva, uerr)
@@ -116,9 +130,9 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 		}
 
 		// Split into per-direction batches (scrape_runs is direction-keyed).
-		arrivals := make([]shared.StopEvent, 0, len(result.Events)/2)
-		departures := make([]shared.StopEvent, 0, len(result.Events)/2)
-		for _, ev := range result.Events {
+		arrivals := make([]shared.StopEvent, 0, len(stationResult.Events)/2)
+		departures := make([]shared.StopEvent, 0, len(stationResult.Events)/2)
+		for _, ev := range stationResult.Events {
 			if ev.Direction == "arrival" {
 				arrivals = append(arrivals, ev)
 			} else {
@@ -133,6 +147,7 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 			}
 			pr, err := processor.PersistStopEvent(ctx, batch)
 			if err != nil {
+				result = "persist_error"
 				return fmt.Errorf("persist %s/%s: %w", p.Eva, batch[0].Direction, err)
 			}
 			newNames = append(newNames, pr.NewStations...)
@@ -153,8 +168,11 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 // DATASET_SCHEMA_VERSION (default v0.1-beta).
 func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
+		result := "ok"
+		defer func() { metrics.WorkerTasks.WithLabelValues("export:month", result).Inc() }()
 		var p asynqtasks.ExportMonthPayload
 		if err := json.Unmarshal(t.Payload(), &p); err != nil {
+			result = "bad_payload"
 			return fmt.Errorf("unmarshal payload: %v: %w", err, asynq.SkipRetry)
 		}
 		if p.Year < 2000 || p.Month < 1 || p.Month > 12 {
@@ -165,8 +183,10 @@ func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Tas
 		chunkName := fmt.Sprintf("%04d-%02d", p.Year, p.Month)
 		m, err := activities.ExportMonth(ctx, pool, filepath.Join(outDir, chunkName), p.Year, p.Month, schema)
 		if err != nil {
+			result = "error"
 			return fmt.Errorf("export %s: %w", chunkName, err)
 		}
+		metrics.ExportLastSuccess.SetToCurrentTime()
 		log.Printf("export %s done: %d stop_events, %d stations, manifest at %s",
 			chunkName, m.StopEvents.Rows, m.Stations.Rows, outDir)
 

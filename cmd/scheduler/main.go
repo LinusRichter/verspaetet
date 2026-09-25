@@ -11,6 +11,7 @@ import (
 	"time"
 
 	asynqtasks "verspaetet/asynqtasks"
+	"verspaetet/metrics"
 
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,6 +46,8 @@ func main() {
 
 	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
 	defer client.Close()
+
+	metrics.Listen(envOr("METRICS_ADDR", ":9091"))
 
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -173,6 +176,7 @@ func runTick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, slot
 		enqueued++
 	}
 	if enqueued > 0 {
+		metrics.SchedulerEnqueued.Add(float64(enqueued))
 		log.Printf("tick slot=%d: enqueued %d station tasks", slot, enqueued)
 	}
 }

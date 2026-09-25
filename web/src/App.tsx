@@ -27,7 +27,7 @@ function App() {
         <StatsBar />
         <div className="top-bar-right">
           <HealthBadge />
-          <a href="/ops" className="ui-link">ops</a>
+          <a href={`http://${window.location.hostname}:8082`} target="_blank" rel="noreferrer" className="ui-link">grafana</a>
         </div>
       </div>
       <div className="main-layout">

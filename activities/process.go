@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"verspaetet/metrics"
 	"verspaetet/shared"
 
 	"github.com/jackc/pgx/v5"
@@ -107,6 +108,7 @@ INSERT INTO stop_events (
   )
   ON CONFLICT (station_eva, direction, stop_id, scraped_at) DO NOTHING`
 
+	inserted := int64(0)
 	for _, ev := range events {
 		var tripDate interface{}
 		if ev.TripDate != nil {
@@ -136,7 +138,7 @@ INSERT INTO stop_events (
 		if ev.Owner != "" {
 			owner = ev.Owner
 		}
-		_, err := tx.Exec(ctx, upsertSQL,
+		ct, err := tx.Exec(ctx, upsertSQL,
 			stationEva, ev.Direction, ev.StopID,
 			scrapeRunID, tripDate,
 			ev.LineCategory, trainNumber, owner, ev.TripKind,
@@ -146,6 +148,10 @@ INSERT INTO stop_events (
 		if err != nil {
 			return shared.PersistResult{}, fmt.Errorf("upsert stop_event (stop_id=%s): %w", ev.StopID, err)
 		}
+		inserted += ct.RowsAffected()
+	}
+	if inserted > 0 {
+		metrics.StopEventsPersisted.Add(float64(inserted))
 	}
 
 	// Collect unresolved route-path names for discovery.

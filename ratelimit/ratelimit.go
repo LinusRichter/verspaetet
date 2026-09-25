@@ -85,6 +85,18 @@ func (l *Limiter) Wait(ctx context.Context) error {
 	}
 }
 
+// Tokens returns a snapshot of (available tokens, bucket capacity).
+// Read-only — no refill happens. Used by metrics to expose how close the
+// fleet is to the request budget.
+func (l *Limiter) Tokens() (tokens, max float64) {
+	if l == nil {
+		return 0, 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tokens, l.max
+}
+
 // TryTake takes a token without blocking. Reports success.
 func (l *Limiter) TryTake() bool {
 	if l == nil {

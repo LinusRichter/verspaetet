@@ -1,0 +1,93 @@
+# monitoring/compose.monitoring.yml — ops monitoring stack (Grafana + VictoriaMetrics).
+#
+# Included from the root docker-compose.yml via `include:`, so it shares the
+# project network: scrape targets are plain service names (worker, scheduler,
+# api, node_exporter, cadvisor). Only Grafana publishes a port.
+#
+# Generic and server-agnostic: credentials come from .env
+# (GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD), no host-specific values here.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # VictoriaMetrics single-node: stores all scraped time series (TSDB).
+  # Native Prometheus-compatible scraping — no separate Prometheus/vmagent.
+  # UI (targets debug): http://localhost:8428/vmui
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.152.0
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - -promscrape.config=/etc/vm/scrape.yml
+      - -storageDataPath=/vm-data
+      - -retentionPeriod=90d
+      - -httpListenAddr=:8428
+    volumes:
+      - ./scrape.yml:/etc/vm/scrape.yml:ro
+      - verspaetet_vmdata:/vm-data
+    ports:
+      - "127.0.0.1:8428:8428" # localhost only — VM UI/debugging
+
+  # Grafana — the ops dashboard at :8082. Dashboards + datasource are
+  # provisioned from ./grafana (dashboards as code, no manual clicking).
+  grafana:
+    image: grafana/grafana-oss:11.4.0
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # View dashboards without login (LAN monitor like the :8080 UI);
+      # admin login remains required for editing.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_BASIC_ENABLED: "true"
+    volumes:
+      - verspaetet_grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "8082:3000"
+    depends_on:
+      - victoriametrics
+
+  # Host metrics: CPU, memory, filesystems, network. Also exposes the
+  # textfile collector — cron/backup jobs drop .prom files into ./textfile
+  # (see backup-example.sh and README.md).
+  node_exporter:
+    image: quay.io/prometheus/node-exporter:v1.8.2
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    pid: host
+    volumes:
+      - /:/host:ro
+      - ./textfile:/textfile
+
+  # Per-container CPU/memory metrics.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    logging: *default-logging
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    command:
+      - -housekeeping_interval=30s
+      - -docker_only=true
+
+volumes:
+  verspaetet_vmdata:
+  verspaetet_grafana:

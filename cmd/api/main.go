@@ -7,12 +7,12 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"verspaetet/metrics"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -142,30 +142,10 @@ func main() {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		handleHealth(w, r, pool)
 	})
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "redis:6379"
-	}
-	inspector := asynq.NewInspector(asynq.RedisClientOpt{Addr: redisAddr})
-	mux.HandleFunc("GET /api/ops/queues", func(w http.ResponseWriter, r *http.Request) {
-		handleOpsQueues(w, r, inspector)
-	})
-	mux.HandleFunc("GET /api/ops/failed", func(w http.ResponseWriter, r *http.Request) {
-		handleOpsFailed(w, r, inspector)
-	})
-	mux.HandleFunc("GET /api/ops/collection", func(w http.ResponseWriter, r *http.Request) {
-		handleOpsCollection(w, r, pool)
-	})
-	mux.HandleFunc("GET /api/ops/exports", func(w http.ResponseWriter, r *http.Request) {
-		handleOpsExports(w, r)
-	})
+	mux.Handle("GET /metrics", metrics.Handler())
 
 	// Serve React static files if web/dist exists.
 	if _, err := os.Stat("web/dist"); err == nil {
-		// /ops → ops.html (ops dashboard, separate Vite entry).
-		mux.HandleFunc("GET /ops", func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, filepath.Join("web", "dist", "ops.html"))
-		})
 		mux.Handle("/", http.FileServer(http.Dir("web/dist")))
 	}
 
@@ -186,191 +166,6 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	}
 }
 
-// ── Ops dashboard (replaces asynqmon for day-to-day monitoring) ─────────
-
-type opsQueue struct {
-	Queue      string `json:"queue"`
-	Pending    int    `json:"pending"`
-	Active     int    `json:"active"`
-	Scheduled  int    `json:"scheduled"`
-	Retry      int    `json:"retry"`
-	Archived   int    `json:"archived"`
-	Processed  int    `json:"processed"`
-	Failed     int    `json:"failed"`
-	LastError  string `json:"last_error"`
-	LastFailed string `json:"last_failed_at"`
-}
-
-func handleOpsQueues(w http.ResponseWriter, r *http.Request, inspector *asynq.Inspector) {
-	names, err := inspector.Queues()
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("inspector queues: %v", err))
-		return
-	}
-	var out []opsQueue
-	for _, q := range names {
-		s, err := inspector.GetQueueInfo(q)
-		if err != nil {
-			continue
-		}
-		row := opsQueue{
-			Queue: q, Pending: s.Pending, Active: s.Active,
-			Scheduled: s.Scheduled, Retry: s.Retry, Archived: s.Archived,
-			Processed: s.Processed, Failed: s.Failed,
-		}
-		// Sample the archived queue to surface the most recent failure.
-		if s.Archived > 0 {
-			if tasks, err := inspector.ListArchivedTasks(q, asynq.PageSize(1)); err == nil && len(tasks) > 0 {
-				row.LastError = tasks[0].LastErr
-				row.LastFailed = tasks[0].LastFailedAt.Format(time.RFC3339)
-			}
-		}
-		out = append(out, row)
-	}
-	if out == nil {
-		out = []opsQueue{}
-	}
-	writeJSON(w, out)
-}
-
-type opsFailedTask struct {
-	ID          string `json:"id"`
-	Queue       string `json:"queue"`
-	Type        string `json:"type"`
-	Payload     string `json:"payload"`
-	LastError   string `json:"last_error"`
-	RetriesDone int    `json:"retries"`
-	State       string `json:"state"` // "retry" (still trying) or "archived" (exhausted)
-	LastFailed  string `json:"last_failed_at"`
-}
-
-func handleOpsFailed(w http.ResponseWriter, r *http.Request, inspector *asynq.Inspector) {
-	limit := 50
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 200 {
-			limit = n
-		}
-	}
-	var out []opsFailedTask
-	// Retry tasks = failing but still trying; archived = retries exhausted.
-	for _, list := range []struct {
-		name  string
-		state string
-		fn    func(asynq.ListOption) ([]*asynq.TaskInfo, error)
-	}{
-		{"retry", "retry", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListRetryTasks("default", o) }},
-		{"archived", "archived", func(o asynq.ListOption) ([]*asynq.TaskInfo, error) { return inspector.ListArchivedTasks("default", o) }},
-	} {
-		tasks, err := list.fn(asynq.PageSize(limit))
-		if err != nil {
-			continue
-		}
-		for _, t := range tasks {
-			out = append(out, opsFailedTask{
-				ID: t.ID, Queue: "default", Type: t.Type,
-				Payload: string(t.Payload), LastError: t.LastErr,
-				RetriesDone: t.Retried, State: list.state,
-				LastFailed: t.LastFailedAt.Format(time.RFC3339),
-			})
-		}
-	}
-	if out == nil {
-		out = []opsFailedTask{}
-	}
-	// Most recent failures first (across both states).
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].LastFailed > out[j].LastFailed
-	})
-	writeJSON(w, out)
-}
-
-type opsCollection struct {
-	EventsLastHour   int     `json:"events_last_hour"`
-	DistinctStations int     `json:"stations_scraped_last_hour"`
-	TotalStations    int     `json:"total_stations"`
-	NoIrisStations   int     `json:"no_iris_stations"`
-	PendingStations  int     `json:"pending_stations"`
-	EventsPerMinute  float64 `json:"events_per_minute"`
-	PunctualPct      float64 `json:"punctual_pct"`
-	CancelledPct     float64 `json:"cancelled_pct"`
-	AvgSnapsPerStop  float64 `json:"avg_snaps_per_stop"`
-	OldestEvent      string  `json:"oldest_event"`
-	DBSize           string  `json:"db_size"`
-}
-
-func handleOpsCollection(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
-	var c opsCollection
-	err := pool.QueryRow(r.Context(), `
-		SELECT
-		  (SELECT count(*) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'),
-		  (SELECT count(DISTINCT station_eva) FROM scrape_runs WHERE scraped_at > NOW() - INTERVAL '1 hour'),
-		  (SELECT count(*) FROM stations),
-		  (SELECT count(*) FROM stations WHERE no_iris),
-		  (SELECT count(*) FROM pending_stations),
-		  (SELECT count(*) FILTER (WHERE NOT cancelled AND ABS(EXTRACT(EPOCH FROM (actual_time-planned_time))/60) < 2) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour')::float
-		   / GREATEST((SELECT count(*) FILTER (WHERE actual_time IS NOT NULL) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'), 1) * 100,
-		  (SELECT count(*) FILTER (WHERE cancelled) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour')::float
-		   / GREATEST((SELECT count(*) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour'), 1) * 100,
-		  (SELECT avg(n)::float FROM (SELECT count(*) AS n FROM stop_events WHERE scraped_at > NOW() - INTERVAL '1 hour' GROUP BY stop_id, direction) x),
-		  (SELECT min(scraped_at)::text FROM stop_events),
-		  (SELECT pg_size_pretty(pg_database_size(current_database())))`).
-		Scan(&c.EventsLastHour, &c.DistinctStations, &c.TotalStations, &c.NoIrisStations,
-			&c.PendingStations, &c.PunctualPct, &c.CancelledPct, &c.AvgSnapsPerStop,
-			&c.OldestEvent, &c.DBSize)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("query ops collection: %v", err))
-		return
-	}
-	c.EventsPerMinute = float64(c.EventsLastHour) / 60.0
-	writeJSON(w, c)
-}
-
-type opsExportChunk struct {
-	Name       string `json:"name"`
-	Files      int    `json:"files"`
-	TotalBytes int64  `json:"total_bytes"`
-}
-
-// handleOpsExports lists the exported monthly chunks in EXPORTS_DIR.
-// Read-only: names, file count and total size per chunk directory.
-func handleOpsExports(w http.ResponseWriter, r *http.Request) {
-	dir := os.Getenv("EXPORTS_DIR")
-	if dir == "" {
-		dir = "/exports"
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		// No exports yet — empty list, not an error.
-		writeJSON(w, []opsExportChunk{})
-		return
-	}
-	var out []opsExportChunk
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		sub, err := os.ReadDir(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var files int
-		var total int64
-		for _, f := range sub {
-			if f.IsDir() {
-				continue
-			}
-			files++
-			if info, err := f.Info(); err == nil {
-				total += info.Size()
-			}
-		}
-		out = append(out, opsExportChunk{Name: e.Name(), Files: files, TotalBytes: total})
-	}
-	if out == nil {
-		out = []opsExportChunk{}
-	}
-	writeJSON(w, out)
-}
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

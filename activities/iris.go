@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"verspaetet/metrics"
 	"verspaetet/ratelimit"
 	"verspaetet/shared"
 )
@@ -128,14 +129,37 @@ var irisHTTP = &http.Client{Timeout: 30 * time.Second}
 // configured rate, no matter what.
 var irisLimiter = ratelimit.FromEnv("IRIS_RATE_LIMIT")
 
+// irisEndpointLabel maps a request path to a stable metrics label value.
+func irisEndpointLabel(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/fchg/"):
+		return "fchg"
+	case strings.HasPrefix(path, "/plan/"):
+		return "plan"
+	default:
+		return "other"
+	}
+}
+
 // irisGet fetches and decodes a <timetable> XML document from one endpoint.
 func irisGet(ctx context.Context, path string) (*Timetable, error) {
+	endpoint := irisEndpointLabel(path)
+	start := time.Now()
 	// Token check BEFORE building/sending the request.
 	if err := irisLimiter.Wait(ctx); err != nil {
+		metrics.IRISFetches.WithLabelValues(endpoint, "limiter").Inc()
+		metrics.IRISFetchDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 		return nil, fmt.Errorf("iris rate limiter: %w", err)
+	}
+	// Snapshot the token bucket right after the wait (it was just refilled
+	// and decremented) so the dashboard shows how close to the budget we are.
+	if tokens, max := irisLimiter.Tokens(); max > 0 {
+		metrics.IRISTokens.Set(tokens)
+		metrics.IRISTokensMax.Set(max)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, irisBaseURL()+path, nil)
 	if err != nil {
+		metrics.IRISFetches.WithLabelValues(endpoint, "build_error").Inc()
 		return nil, err
 	}
 	if id := os.Getenv("IRIS_CLIENT_ID"); id != "" {
@@ -146,17 +170,25 @@ func irisGet(ctx context.Context, path string) (*Timetable, error) {
 	}
 	resp, err := irisHTTP.Do(req)
 	if err != nil {
+		metrics.IRISFetches.WithLabelValues(endpoint, "network_error").Inc()
+		metrics.IRISFetchDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 		return nil, fmt.Errorf("iris GET %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		metrics.IRISFetches.WithLabelValues(endpoint, fmt.Sprintf("http_%d", resp.StatusCode)).Inc()
+		metrics.IRISFetchDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 		return nil, fmt.Errorf("iris GET %s: status %d: %s", path, resp.StatusCode, string(body))
 	}
 	var tt Timetable
 	if err := xml.NewDecoder(resp.Body).Decode(&tt); err != nil {
+		metrics.IRISFetches.WithLabelValues(endpoint, "decode_error").Inc()
+		metrics.IRISFetchDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 		return nil, fmt.Errorf("iris GET %s: decode: %w", path, err)
 	}
+	metrics.IRISFetches.WithLabelValues(endpoint, "ok").Inc()
+	metrics.IRISFetchDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 	return &tt, nil
 }
 
