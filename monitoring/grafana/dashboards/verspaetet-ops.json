@@ -117,7 +117,7 @@
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
       "targets": [
-        { "refId": "A", "expr": "verspaetet_iris_ratelimit_tokens", "legendFormat": "tokens" }
+        { "refId": "A", "expr": "max(verspaetet_iris_ratelimit_tokens)", "legendFormat": "tokens" }
       ],
       "fieldConfig": {
         "defaults": {
