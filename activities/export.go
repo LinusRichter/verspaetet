@@ -509,7 +509,8 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 		if err != nil {
 			return err
 		}
-		files = append(files, fileMeta{name: e.Name(), size: size, sha: sha, lfs: size > 10<<20})
+		isText := strings.HasSuffix(e.Name(), ".md") || strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".txt")
+		files = append(files, fileMeta{name: e.Name(), size: size, sha: sha, lfs: !isText && size > 1024})
 	}
 	if len(files) == 0 {
 		return fmt.Errorf("no files in %s", chunkDir)
