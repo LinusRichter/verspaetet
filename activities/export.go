@@ -721,6 +721,11 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 		if name == "stations.parquet" {
 			return name
 		}
+		if parts := strings.SplitN(name, ".parquet", 2); strings.HasPrefix(parts[0], "stop_events") && len(parts) > 1 {
+			// stop_events_2026-09.parquet → <month>/stop_events.parquet
+			// (der Ordner trägt bereits den Monat; im Ordner ein einheitlicher Name)
+			return month + "/" + "stop_events.parquet"
+		}
 		return month + "/" + name
 	}
 	commitMsg := fmt.Sprintf("dataset chunk %s", month)
@@ -777,7 +782,7 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 				if f.Type != "file" || f.Path == ".gitattributes" || f.Path == "README.md" || f.Path == "stations.parquet" {
 					continue
 				}
-				oldFlat := (strings.HasPrefix(f.Path, "stop_events_") && strings.HasSuffix(f.Path, ".parquet") && !strings.Contains(f.Path, "/")) || f.Path == "manifest.json"
+				oldFlat := (strings.HasPrefix(f.Path, "stop_events_") && strings.HasSuffix(f.Path, ".parquet") && !strings.Contains(f.Path, "/")) || f.Path == "manifest.json" || (strings.Contains(f.Path, "/") && strings.HasPrefix(f.Path, "20") && strings.HasPrefix(filepath.Base(f.Path), "stop_events_") && filepath.Base(f.Path) != "stop_events.parquet" && strings.HasSuffix(f.Path, ".parquet"))
 				if oldFlat {
 					enc.Encode(map[string]interface{}{"key": "deletedFile", "value": map[string]interface{}{"path": f.Path}})
 					log.Printf("[export] hf: removing old flat file %s from repo tree", f.Path)
