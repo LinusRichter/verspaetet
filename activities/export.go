@@ -683,7 +683,7 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 				return fmt.Errorf("lfs upload %s: status %d: %s", src.name, pr.StatusCode, bytes.TrimSpace(prBody))
 			}
 			uploaded[obj.OID] = true
-			log.Printf("[export] lfs: uploaded %s (%d bytes)", src.name, src.size)
+			log.Printf("[export] lfs: uploaded %s (%d bytes, oid %s, status %d)", src.name, src.size, obj.OID[:8], pr.StatusCode)
 			// Optional verify step.
 			if verify, ok := obj.Actions["verify"]; ok {
 				vjson, _ := json.Marshal(map[string]interface{}{"oid": obj.OID, "size": obj.Size})
@@ -693,9 +693,22 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 					vr.Header.Set("Content-Type", "application/vnd.git-lfs+json")
 					vresp, err := client.Do(vr)
 					if err == nil {
+						log.Printf("[export] lfs: verify %s -> status %d", src.name, vresp.StatusCode)
 						vresp.Body.Close()
+					} else {
+						log.Printf("[export] WARN lfs verify %s: %v", src.name, err)
 					}
 				}
+			}
+			// Settle-Wait: auf Xet-Backed-Repos ist ein eben gePUTetes Objekt
+			// Server-Seitig noch nicht sichtbar — ein direkt danach eingereichter
+			// Commit mit diesem OID hing sonst (beobachtet 12.10.: hängt bis
+			// Client-Timeout). 20s Puffer vor dem Commit.
+			log.Printf("[export] lfs: settle 20s nach Upload (Xet-Sichtbarkeit)")
+			select {
+			case <-time.After(20 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 		}
 	}
@@ -781,15 +794,39 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 	}
 	cr.Header.Set("Authorization", "Bearer "+token)
 	cr.Header.Set("Content-Type", "application/x-ndjson")
-	cresp, err := client.Do(cr)
-	if err != nil {
-		return fmt.Errorf("hf commit: %w", err)
+	// Commit mit Retry: bei Fehlern die Response sichtbar loggen (der
+	// Xet-Store braucht nach einem frischen PUT manchmal einen Versuch länger).
+	cbody := []byte(nil)
+	var cresp *http.Response
+	for attempt := 1; attempt <= 3; attempt++ {
+		cr, err := http.NewRequestWithContext(ctx, http.MethodPost, curl_, bytes.NewReader(commitBody.Bytes()))
+		if err != nil {
+			return err
+		}
+		cr.Header.Set("Authorization", "Bearer "+token)
+		cr.Header.Set("Content-Type", "application/x-ndjson")
+		cresp, err = client.Do(cr)
+		if err != nil {
+			return fmt.Errorf("hf commit: %w", err)
+		}
+		cbody, _ = io.ReadAll(io.LimitReader(cresp.Body, 1<<20))
+		cresp.Body.Close()
+		if cresp.StatusCode >= 200 && cresp.StatusCode < 300 {
+			break
+		}
+		log.Printf("[export] WARN hf commit (attempt %d): status %d: %s", attempt, cresp.StatusCode, bytes.TrimSpace(cbody))
+		if attempt < 3 {
+			select {
+			case <-time.After(15 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
-	cbody, _ := io.ReadAll(io.LimitReader(cresp.Body, 1<<20))
-	cresp.Body.Close()
-	if cresp.StatusCode < 200 || cresp.StatusCode >= 300 {
-		return fmt.Errorf("hf commit: status %d: %s", cresp.StatusCode, bytes.TrimSpace(cbody))
+	if cresp == nil || cresp.StatusCode < 200 || cresp.StatusCode >= 300 {
+		return fmt.Errorf("hf commit: status %d (3 attempts): %s", cresp.StatusCode, bytes.TrimSpace(cbody))
 	}
+	log.Printf("[export] hf commit response: %s", bytes.TrimSpace(cbody))
 	log.Printf("[export] uploaded chunk %s to huggingface.co/datasets/%s", filepath.Base(chunkDir), repo)
 	return nil
 }
