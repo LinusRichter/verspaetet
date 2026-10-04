@@ -425,6 +425,20 @@ func consumeDowntimeNotes() []string {
 // (HuggingFace picks it up as the dataset card).
 func WriteDatasetCard(outDir string, m *Manifest, stationCount int) error {
 	var b strings.Builder
+	// YAML front matter — HuggingFace liest das als Repo-Card-Metadaten;
+	// ohne den Block warnt die Hub-UI ("empty or missing yaml metadata").
+	b.WriteString("---\n")
+	b.WriteString("language:\n")
+	b.WriteString("- de\n")
+	b.WriteString("license: cc-by-4.0\n")
+	b.WriteString("pretty_name: verspaetet — DB Delay Snapshots " + fmt.Sprintf("%04d-%02d\n", m.Year, m.Month))
+	b.WriteString("size_categories:\n")
+	b.WriteString("- 10M<n<100M\n")
+	b.WriteString("tags:\n")
+	for _, t := range []string{"deutsche-bahn", "timetable", "delay", "transportation", "railway"} {
+		b.WriteString("- " + t + "\n")
+	}
+	b.WriteString("---\n\n")
 	b.WriteString("# verspaetet — DB delay snapshots " + fmt.Sprintf("%04d-%02d\n\n", m.Year, m.Month))
 	b.WriteString("Monthly chunk of delay-evolution snapshots collected from Deutsche Bahn\n")
 	b.WriteString("station boards via the official DB Timetables API (IRIS).\n\n")
