@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -157,8 +158,58 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	if err := WriteDatasetCard(outDir, m, int(stationsRows)); err != nil {
 		log.Printf("WARN dataset card: %v", err)
 	}
+	// Root-Übersicht (Repo-Card im HF-Repo): Index ALLER Monats-Chunks.
+	if err := WriteOverviewCard(filepath.Dir(outDir)); err != nil {
+		log.Printf("WARN overview card: %v", err)
+	}
 	log.Printf("[export] %d-%02d: %d stop_events, %d stations -> %s", year, month, rowsWritten, stationsRows, outDir)
 	return m, nil
+}
+
+// WriteOverviewCard regenerates the ROOT README.md in the exports dir: an
+// index of all month chunks (row counts from each chunk's manifest.json).
+// Uploaded as the HuggingFace repo card on every export.
+func WriteOverviewCard(exportsDir string) error {
+	dirs, err := filepath.Glob(filepath.Join(exportsDir, "20??-??"))
+	if err != nil {
+		return err
+	}
+	sort.Strings(dirs)
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.WriteString("language:\n\t- de\n")
+	b.WriteString("license: cc-by-4.0\n")
+	b.WriteString("pretty_name: verspaetet — DB Delay Snapshots\n")
+	b.WriteString("tags:\n\t- deutsche-bahn\n\t- timetable\n\t- delay\n\t- transportation\n\t- railway\n")
+	b.WriteString("---\n\n")
+	b.WriteString("# verspaetet — DB Delay Snapshots\n\n")
+	b.WriteString("Monthly chunks of delay-evolution snapshots collected from Deutsche\n")
+	b.WriteString("Bahn station boards via the official DB Timetables API (IRIS). Each month\n")
+	b.WriteString("lives in its own folder (parquet + manifest.json with checksums + a\n")
+	b.WriteString("per-month README with coverage). This README is regenerated on every\n")
+	b.WriteString("monthly export.\n\n")
+	b.WriteString("## Months\n\n")
+	for _, dir := range dirs {
+		month := filepath.Base(dir)
+		rows := "?"
+		if man, err := os.ReadFile(filepath.Join(dir, "manifest.json")); err == nil {
+			var mj struct {
+				StopEvents struct {
+					Rows int64 `json:"rows"`
+				} `json:"stop_events"`
+			}
+			if json.Unmarshal(man, &mj) == nil {
+				rows = fmt.Sprintf("%d", mj.StopEvents.Rows)
+			}
+		}
+		b.WriteString(fmt.Sprintf("- %s — %s stop-event snapshots — files in %s/, card in %s/README.md\n", month, rows, month, month))
+	}
+	card := filepath.Join(exportsDir, "README.md")
+	tmp := card + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, card)
 }
 
 // exportStopEvents streams all events with trip_date in [start, end) to a
@@ -649,17 +700,27 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 		}
 	}
 
-	// 2) NDJSON commit: header + one line per file (lfsFile or inline base64).
-	commitMsg := fmt.Sprintf("dataset chunk %s", filepath.Base(chunkDir))
+	// 2) NDJSON commit — Monatsordner-Layout:
+	//    <month>/stop_events.parquet, <month>/manifest.json, <month>/README.md;
+	//    stations.parquet (Registry, immer aktuell) + README.md (Übersicht) flat.
+	month := filepath.Base(chunkDir)
+	repoPath := func(name string) string {
+		if name == "stations.parquet" {
+			return name
+		}
+		return month + "/" + name
+	}
+	commitMsg := fmt.Sprintf("dataset chunk %s", month)
 	var commitBody bytes.Buffer
 	enc := json.NewEncoder(&commitBody)
 	enc.Encode(map[string]interface{}{"key": "header", "value": map[string]interface{}{
 		"summary": commitMsg, "description": "verspaetet monthly export",
 	}})
 	for _, f := range files {
+		path := repoPath(f.name)
 		if f.lfs {
 			enc.Encode(map[string]interface{}{"key": "lfsFile", "value": map[string]interface{}{
-				"path": f.name, "algo": "sha256", "oid": f.sha, "size": f.size,
+				"path": path, "algo": "sha256", "oid": f.sha, "size": f.size,
 			}})
 		} else {
 			b, err := os.ReadFile(filepath.Join(chunkDir, f.name))
@@ -667,9 +728,51 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 				return err
 			}
 			enc.Encode(map[string]interface{}{"key": "file", "value": map[string]interface{}{
-				"path": f.name, "content": base64.StdEncoding.EncodeToString(b), "encoding": "base64",
+				"path": path, "content": base64.StdEncoding.EncodeToString(b), "encoding": "base64",
 			}})
 		}
+	}
+	// Root-Übersichts-README aus dem exports-Dir (wird von WriteOverviewCard
+	// bei jedem Export neu generiert) → Repo-Card.
+	if overview, err := os.ReadFile(filepath.Join(filepath.Dir(chunkDir), "README.md")); err == nil {
+		enc.Encode(map[string]interface{}{"key": "file", "value": map[string]interface{}{
+			"path": "README.md", "content": base64.StdEncoding.EncodeToString(overview), "encoding": "base64",
+		}})
+	}
+	// Alt-Layout aufräumen: flat liegende stop_events-Parquets und manifest.json
+	// (vor der Ordner-Umstellung) aus dem Repo-Tree entfernen — IDEMPOTENT:
+	// im Tree fehlen sie in künftigen Läufen → die Liste ist leer.
+	treeURL := hfEndpoint + "/api/datasets/" + repo + "/tree/main?recursive=true"
+	treeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
+	if err != nil {
+		return err
+	}
+	treeReq.Header.Set("Authorization", "Bearer "+token)
+	treeResp, err := client.Do(treeReq)
+	if err != nil {
+		return fmt.Errorf("hf tree: %w", err)
+	}
+	treeBody, _ := io.ReadAll(io.LimitReader(treeResp.Body, 1<<20))
+	treeResp.Body.Close()
+	if treeResp.StatusCode == http.StatusOK {
+		var tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(treeBody, &tree) == nil {
+			for _, f := range tree {
+				if f.Type != "file" || f.Path == ".gitattributes" || f.Path == "README.md" || f.Path == "stations.parquet" {
+					continue
+				}
+				oldFlat := (strings.HasPrefix(f.Path, "stop_events_") && strings.HasSuffix(f.Path, ".parquet") && !strings.Contains(f.Path, "/")) || f.Path == "manifest.json"
+				if oldFlat {
+					enc.Encode(map[string]interface{}{"key": "deletedFile", "value": map[string]interface{}{"path": f.Path}})
+					log.Printf("[export] hf: removing old flat file %s from repo tree", f.Path)
+				}
+			}
+		}
+	} else {
+		log.Printf("[export] WARN hf tree list: status %d (skipping cleanup)", treeResp.StatusCode)
 	}
 	curl_ := hfEndpoint + "/api/datasets/" + repo + "/commit/main"
 	cr, err := http.NewRequestWithContext(ctx, http.MethodPost, curl_, &commitBody)
