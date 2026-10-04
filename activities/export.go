@@ -1,14 +1,16 @@
 package activities
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -469,70 +471,206 @@ func writeJSONAtomic(path string, v interface{}) error {
 
 var _ = log.Printf
 
-// UploadToHuggingFace pushes the exported chunk files to the HF dataset repo
-// via the git protocol. HF_TOKEN and HF_REPO must be set
+// UploadToHuggingFace uploads the exported chunk files to the HF dataset repo
+// via the Hub REST API — NO git. Files larger than lfsThreshold go through the
+// LFS protocol (batch → presigned PUT → verify), everything else is inlined
+// base64 in an NDJSON commit. Idempotent: the LFS batch skips objects that the
+// Hub already has (no "actions" in the response), and the commit overwrites
+// the same paths. HF_TOKEN and HF_REPO must be set
 // (e.g. HF_TOKEN=hf_..., HF_REPO=LinusRichter404/verspaetet).
-// The repo is cloned fresh into a temp dir each run; chunk files are copied
-// in, committed and pushed. Idempotent per chunk: re-uploading overwrites
-// the same paths.
 func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 	token := os.Getenv("HF_TOKEN")
 	repo := os.Getenv("HF_REPO")
 	if token == "" || repo == "" {
 		return fmt.Errorf("HF_TOKEN or HF_REPO not set")
 	}
-	gitBin, err := exec.LookPath("git")
-	if err != nil {
-		return fmt.Errorf("git not found in PATH: %w", err)
-	}
 
-	tmp, err := os.MkdirTemp("", "hf-upload-")
-	if err != nil {
-		return err
+	type fileMeta struct {
+		name string
+		size int64
+		sha  string // hex sha256
+		lfs  bool
 	}
-	defer os.RemoveAll(tmp)
-
-	cloneURL := fmt.Sprintf("https://oauth2:%s@huggingface.co/datasets/%s", token, repo)
-	run := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, gitBin, args...)
-		cmd.Dir = tmp
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))
-		}
-		return nil
-	}
-	if err := run("clone", "--depth", "1", cloneURL, "."); err != nil {
-		return fmt.Errorf("clone HF repo: %w", err)
-	}
-
-	// Copy the chunk files into the repo root (flat layout).
 	entries, err := os.ReadDir(chunkDir)
 	if err != nil {
 		return err
 	}
+	var files []fileMeta
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		src := filepath.Join(chunkDir, e.Name())
-		dst := filepath.Join(tmp, e.Name())
-		if err := copyFile(src, dst); err != nil {
-			return fmt.Errorf("copy %s: %w", e.Name(), err)
+		p := filepath.Join(chunkDir, e.Name())
+		size, err := fileSize(p)
+		if err != nil {
+			return err
+		}
+		sha, err := fileSHA256(p)
+		if err != nil {
+			return err
+		}
+		files = append(files, fileMeta{name: e.Name(), size: size, sha: sha, lfs: size > 10<<20})
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("no files in %s", chunkDir)
+	}
+
+	const hfEndpoint = "https://huggingface.co"
+	// Long timeout: the 308 MB parquet PUT must fit a slow line.
+	client := &http.Client{Timeout: 30 * time.Minute}
+
+	// 1) LFS batch for large files: get presigned upload URLs.
+	type lfsAction struct {
+		Href   string            `json:"href"`
+		Header map[string]string `json:"header"`
+	}
+	type lfsObject struct {
+		OID     string               `json:"oid"`
+		Size    int64                `json:"size"`
+		Actions map[string]lfsAction `json:"actions"`
+	}
+	batchObjects := []map[string]interface{}{}
+	var lfsFiles []fileMeta
+	for _, f := range files {
+		if f.lfs {
+			lfsFiles = append(lfsFiles, f)
+			batchObjects = append(batchObjects, map[string]interface{}{"oid": f.sha, "size": f.size})
+		}
+	}
+	uploaded := map[string]bool{} // sha → already on the hub
+	if len(lfsFiles) > 0 {
+		payload, err := json.Marshal(map[string]interface{}{
+			"operation": "upload",
+			"transfers": []string{"basic"},
+			"objects":   batchObjects,
+			"hash_algo": "sha256",
+			"ref":       map[string]interface{}{"name": "main"},
+		})
+		if err != nil {
+			return err
+		}
+		url := hfEndpoint + "/datasets/" + repo + ".git/info/lfs/objects/batch"
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/vnd.git-lfs+json")
+		req.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("lfs batch: %w", err)
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("lfs batch: status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
+		}
+		var batch struct {
+			Objects []lfsObject `json:"objects"`
+		}
+		if err := json.Unmarshal(body, &batch); err != nil {
+			return fmt.Errorf("lfs batch decode: %w: %s", err, bytes.TrimSpace(body))
+		}
+		for _, obj := range batch.Objects {
+			up, ok := obj.Actions["upload"]
+			if !ok {
+				// No actions = the Hub already has this content — nothing to upload.
+				uploaded[obj.OID] = true
+				log.Printf("[export] lfs: object %s already on the hub — skip", obj.OID[:8])
+				continue
+			}
+			// Find the local file for this oid.
+			var src fileMeta
+			for _, f := range lfsFiles {
+				if f.sha == obj.OID {
+					src = f
+					break
+				}
+			}
+			if src.name == "" {
+				return fmt.Errorf("lfs: no local file for oid %s", obj.OID[:8])
+			}
+			f, err := os.Open(filepath.Join(chunkDir, src.name))
+			if err != nil {
+				return err
+			}
+			put, err := http.NewRequestWithContext(ctx, http.MethodPut, up.Href, f)
+			if err != nil {
+				f.Close()
+				return err
+			}
+			put.ContentLength = src.size
+			for k, v := range up.Header {
+				put.Header.Set(k, v)
+			}
+			put.Header.Set("Content-Type", "application/octet-stream")
+			pr, err := client.Do(put)
+			if err != nil {
+				f.Close()
+				return fmt.Errorf("lfs upload %s: %w", src.name, err)
+			}
+			prBody, _ := io.ReadAll(io.LimitReader(pr.Body, 4096))
+			pr.Body.Close()
+			f.Close()
+			if pr.StatusCode < 200 || pr.StatusCode >= 300 {
+				return fmt.Errorf("lfs upload %s: status %d: %s", src.name, pr.StatusCode, bytes.TrimSpace(prBody))
+			}
+			uploaded[obj.OID] = true
+			log.Printf("[export] lfs: uploaded %s (%d bytes)", src.name, src.size)
+			// Optional verify step.
+			if verify, ok := obj.Actions["verify"]; ok {
+				vjson, _ := json.Marshal(map[string]interface{}{"oid": obj.OID, "size": obj.Size})
+				vr, err := http.NewRequestWithContext(ctx, http.MethodPost, verify.Href, bytes.NewReader(vjson))
+				if err == nil {
+					vr.Header.Set("Authorization", "Bearer "+token)
+					vr.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+					vresp, err := client.Do(vr)
+					if err == nil {
+						vresp.Body.Close()
+					}
+				}
+			}
 		}
 	}
 
-	if err := run("add", "-A"); err != nil {
+	// 2) NDJSON commit: header + one line per file (lfsFile or inline base64).
+	commitMsg := fmt.Sprintf("dataset chunk %s", filepath.Base(chunkDir))
+	var commitBody bytes.Buffer
+	enc := json.NewEncoder(&commitBody)
+	enc.Encode(map[string]interface{}{"key": "header", "value": map[string]interface{}{
+		"summary": commitMsg, "description": "verspaetet monthly export",
+	}})
+	for _, f := range files {
+		if f.lfs {
+			enc.Encode(map[string]interface{}{"key": "lfsFile", "value": map[string]interface{}{
+				"path": f.name, "algo": "sha256", "oid": f.sha, "size": f.size,
+			}})
+		} else {
+			b, err := os.ReadFile(filepath.Join(chunkDir, f.name))
+			if err != nil {
+				return err
+			}
+			enc.Encode(map[string]interface{}{"key": "file", "value": map[string]interface{}{
+				"path": f.name, "content": base64.StdEncoding.EncodeToString(b), "encoding": "base64",
+			}})
+		}
+	}
+	curl_ := hfEndpoint + "/api/datasets/" + repo + "/commit/main"
+	cr, err := http.NewRequestWithContext(ctx, http.MethodPost, curl_, &commitBody)
+	if err != nil {
 		return err
 	}
-	// Nothing new? git commit fails with "nothing to commit" — treat as done.
-	commitErr := run("-c", "user.name=verspaetet", "-c", "user.email=verspaetet@localhost",
-		"commit", "-m", fmt.Sprintf("dataset chunk %s", filepath.Base(chunkDir)))
-	if commitErr != nil && !strings.Contains(commitErr.Error(), "nothing to commit") {
-		return fmt.Errorf("commit: %w", commitErr)
+	cr.Header.Set("Authorization", "Bearer "+token)
+	cr.Header.Set("Content-Type", "application/x-ndjson")
+	cresp, err := client.Do(cr)
+	if err != nil {
+		return fmt.Errorf("hf commit: %w", err)
 	}
-	if err := run("push"); err != nil {
-		return fmt.Errorf("push: %w", err)
+	cbody, _ := io.ReadAll(io.LimitReader(cresp.Body, 1<<20))
+	cresp.Body.Close()
+	if cresp.StatusCode < 200 || cresp.StatusCode >= 300 {
+		return fmt.Errorf("hf commit: status %d: %s", cresp.StatusCode, bytes.TrimSpace(cbody))
 	}
 	log.Printf("[export] uploaded chunk %s to huggingface.co/datasets/%s", filepath.Base(chunkDir), repo)
 	return nil

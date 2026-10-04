@@ -125,6 +125,7 @@ services:
         COPY . .
         RUN go mod download
         RUN go build -o /app/bin/worker ./cmd/worker
+        RUN go build -o /app/bin/seeder ./cmd/seeder
         CMD ["/app/bin/worker"]
     restart: unless-stopped
     logging: *default-logging

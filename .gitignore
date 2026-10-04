@@ -24,3 +24,5 @@ Thumbs.db
 # Temp
 *.tmp
 *.bak
+# Frontend prototype (local iteration only)
+prototype/

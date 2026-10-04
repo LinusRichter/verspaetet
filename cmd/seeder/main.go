@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	asynqtasks "verspaetet/asynqtasks"
@@ -35,18 +37,69 @@ func main() {
 	}
 
 	var eva string
+	var export string
 	flag.StringVar(&eva, "eva", "", "enqueue one board fetch (both directions) for this EVA")
+	flag.StringVar(&export, "export", "", "enqueue a monthly export task (YYYY-MM) — also clears its archived dedup twin")
 	flag.Parse()
 
 	redisAddr := envOr("REDIS_ADDR", "redis:6379")
 	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
 	defer client.Close()
 
+	if export != "" {
+		enqueueExport(client, export)
+		return
+	}
 	if eva != "" {
 		enqueueBoardFetch(client, eva)
 		return
 	}
 	runFullSeed(client)
+}
+
+// enqueueExport enqueues a monthly export task. A failed export sits in the
+// asynq archive under the same dedup TaskID — before re-enqueueing we try to
+// delete it (Inspector) so the new run passes the TaskID-uniqueness check.
+func enqueueExport(client *asynq.Client, ym string) {
+	y, m, ok := parseYearMonth(ym)
+	if !ok {
+		log.Fatalf("[seeder] --export expects YYYY-MM, got %q", ym)
+	}
+	taskID := fmt.Sprintf("export:%04d%02d", y, m)
+	ins := asynq.NewInspector(asynq.RedisClientOpt{Addr: envOr("REDIS_ADDR", "redis:6379")})
+	if err := ins.DeleteTask(asynqtasks.QueueExport, taskID); err != nil {
+		// Not fatal: the task simply may not exist in the archive.
+		log.Printf("[seeder] delete archived %s: %v (ignoring)", taskID, err)
+	}
+	payload, err := json.Marshal(asynqtasks.ExportMonthPayload{Year: y, Month: m})
+	if err != nil {
+		log.Fatalln("marshal:", err)
+	}
+	info, err := client.Enqueue(
+		asynq.NewTask(asynqtasks.TypeExportMonth, payload),
+		asynq.Queue(asynqtasks.QueueExport),
+		asynq.MaxRetry(5),
+		asynq.Timeout(30*time.Minute),
+		asynq.TaskID(taskID),
+	)
+	if err != nil {
+		log.Fatalf("[seeder] Unable to enqueue export %s: %v\n", ym, err)
+	}
+	log.Printf("[seeder] Enqueued export:month %s (id %s)\n", ym, info.ID)
+}
+
+// parseYearMonth parses "YYYY-MM" (also tolerates "YYYY-M").
+func parseYearMonth(s string) (int, int, bool) {
+	parts := strings.Split(s, "-")
+	if len(parts) != 2 || len(parts[0]) != 4 {
+		return 0, 0, false
+	}
+	y, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || m < 1 || m > 12 || y < 2000 {
+		return 0, 0, false
+	}
+	return y, m, true
 }
 
 // enqueueBoardFetch enqueues a single board:fetch task (both directions).
