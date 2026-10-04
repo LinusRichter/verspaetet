@@ -177,10 +177,10 @@ func WriteOverviewCard(exportsDir string) error {
 	sort.Strings(dirs)
 	var b strings.Builder
 	b.WriteString("---\n")
-	b.WriteString("language:\n\t- de\n")
+	b.WriteString("language:\n  - de\n")
 	b.WriteString("license: cc-by-4.0\n")
 	b.WriteString("pretty_name: verspaetet — DB Delay Snapshots\n")
-	b.WriteString("tags:\n\t- deutsche-bahn\n\t- timetable\n\t- delay\n\t- transportation\n\t- railway\n")
+	b.WriteString("tags:\n  - deutsche-bahn\n  - timetable\n  - delay\n  - transportation\n  - railway\n")
 	b.WriteString("---\n\n")
 	b.WriteString("# verspaetet — DB Delay Snapshots\n\n")
 	b.WriteString("Monthly chunks of delay-evolution snapshots collected from Deutsche\n")
