@@ -15,9 +15,9 @@ Monthly Parquet chunks of delay-evolution snapshots for all German IRIS stations
 - **What:** per train stop: planned/actual time, delay, platform (planned/actual), cancellation, line category, train number, operator, route path. Multiple snapshots per train stop = how the communicated delay evolved over time (the unique value of this dataset: endpoint-only "final delay" data exists elsewhere; this records the whole curve).
 - **Coverage:** all ~5,400 IRIS-active stations, one snapshot every 40 minutes (same cadence for every station), both directions from one request per station.
 - **Gaps:** known downtime is documented per chunk in `manifest.json` (`coverage.downtimes`) and the chunk README; `coverage.missing_days` lists operating days without any data.
-- **Format:** Parquet (zstd), partitioned by operating month (`trip_date`), plus `stations.parquet` and a `manifest.json` (SHA256 checksums, coverage, schema version).
+- **Format:** Parquet (zstd). On HuggingFace: one folder per operating month at `<YYYY-MM>/` containing `stop_events_<YYYY-MM>.parquet`, `stations.parquet` (full registry, refreshed each export), `manifest.json` (SHA256, coverage, schema version) and a per-month `README.md` dataset card. A root `README.md` is regenerated on each export and indexes all chunks. Local copies mirror the same layout under `/exports/<YYYY-MM>/`.
 - **License:** CC BY 4.0 (attribution required, see below).
-- **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet) - first chunk (2026-09) publishes 2026-10-04, one chunk on the 4th of each month (previous operating month, +3 days finality lag). Local copies on the collector server under `/exports/<YYYY-MM>/`.
+- **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet) - first chunk (2026-09) publishes 2026-10-04, one chunk on the 4th of each month (previous operating month, +3 days finality lag).
 
 ## Setup
 
