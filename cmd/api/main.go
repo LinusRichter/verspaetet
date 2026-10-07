@@ -410,8 +410,16 @@ func handleHealth(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 		writeError(w, 500, fmt.Sprintf("query health: %v", err))
 		return
 	}
-	// Expected scrape_runs in 10 min = stations / 3 (30-min cadence = 1/3 per 10 min)
-	expected := h.ExpectedRuns / 3
+	// Expected scrape_runs in 10 min = stations / (CADENCE_MINUTES / 10).
+	// CADENCE_MINUTES must match the scheduler + stationimport value (the
+	// fetch_offset hash uses the same modulo). Default 30 (=1/3 per 10 min).
+	cadenceMin := 30
+	if v := os.Getenv("CADENCE_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cadenceMin = n
+		}
+	}
+	expected := h.ExpectedRuns * 10 / cadenceMin
 	if expected > 0 {
 		h.FetchRate = float64(h.RecentRuns) / float64(expected)
 		if h.FetchRate > 1.0 {

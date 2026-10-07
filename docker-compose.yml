@@ -1,8 +1,8 @@
 ﻿# docker-compose.yml â€” verspaetet production stack (asynq + IRIS).
 #
-# Services: postgres (data), redis (asynq job queue), asynqmon (job UI),
+# Services: postgres (data), redis (asynq job queue),
 # migrate (one-shot schema), stationimport (one-shot StaDa station universe),
-# worker (IRIS board fetch + persist), scheduler (30-min tick loop),
+# worker (IRIS board fetch + persist), scheduler (tick-per-minute loop),
 # api (Web UI + JSON).
 #
 # Data source: DB Timetables API (IRIS) â€” free plan, 60 req/min.
@@ -49,22 +49,6 @@ services:
       retries: 10
     volumes:
       - verspaetet_redis:/data
-
-  # asynqmon â€” web UI for the asynq job queue.
-  asynqmon:
-    # Disabled by default — the Grafana ops dashboard at :8082 replaces it for
-    # day-to-day monitoring. Start ad hoc with: docker compose --profile asynqmon up asynqmon
-    profiles: ["asynqmon"]
-    image: hibiken/asynqmon:latest
-    restart: unless-stopped
-    logging: *default-logging
-    environment:
-      - REDIS_ADDR=redis:6379
-    ports:
-      - "8081:8080"
-    depends_on:
-      redis:
-        condition: service_healthy
 
   migrate:
     image: migrate/migrate
@@ -204,6 +188,7 @@ services:
       - REDIS_ADDR=redis:6379
       - EXPORTS_DIR=/exports
       - METRICS_ADDR=:9091
+      - CADENCE_MINUTES=${CADENCE_MINUTES:-40}
     volumes:
       - verspaetet_exports:/exports
     ports:
