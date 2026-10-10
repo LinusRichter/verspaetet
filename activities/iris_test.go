@@ -225,3 +225,28 @@ func TestIrisMergePlanAndFchg(t *testing.T) {
 	}
 	_ = strings.TrimSpace
 }
+
+func TestTripDateFromStopID(t *testing.T) {
+	scrapedAt := time.Now().UTC()
+	// Stop-id middle segment 2610101339 → operating date 2026-10-10.
+	// Regression: d.UTC() turned Berlin midnight into 2026-10-09 22:00Z,
+	// shifting every trip_date back by one calendar day (all production
+	// rows were affected). Must yield UTC midnight of the SAME day.
+	for _, id := range []string{
+		"4772849352819251172-2610101339-22", // positive dailyTripId
+		"-5595402329013696147-2610101139-7", // negative dailyTripId (leading "-")
+	} {
+		stop := &IrisStop{ID: id, DP: &IrisEvent{PT: "2610101339"}}
+		se, ok := irisEventToStopEvent(stop, stop.DP, "8000105", "departure", scrapedAt)
+		if !ok {
+			t.Fatalf("mapping failed for %s", id)
+		}
+		if se.TripDate == nil {
+			t.Fatalf("TripDate missing for %s", id)
+		}
+		want := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+		if !se.TripDate.Equal(want) {
+			t.Errorf("%s: TripDate = %v, want %v", id, se.TripDate, want)
+		}
+	}
+}
