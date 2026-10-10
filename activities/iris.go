@@ -390,7 +390,11 @@ func irisEventToStopEvent(stop *IrisStop, ev *IrisEvent, eva, direction string, 
 	}
 	if len(parts) == 3 && len(parts[1]) >= 6 {
 		if d, err := time.ParseInLocation("060102", parts[1][:6], berlin); err == nil {
-			tripDate := d.UTC()
+			// Build UTC midnight from the parsed wall-clock components — NOT
+			// d.UTC(): d is Berlin midnight, whose UTC conversion lands at
+			// 22:00/23:00 of the PREVIOUS day, shifting trip_date back by one
+			// calendar day (observed in production on all rows).
+			tripDate := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)
 			se.TripDate = &tripDate
 		}
 	}
