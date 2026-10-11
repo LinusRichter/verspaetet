@@ -23,6 +23,11 @@ services:
     image: postgres:${POSTGRESQL_VERSION}
     restart: unless-stopped
     logging: *default-logging
+    # DB is now >30 GB — parallel maintenance (VACUUM/ANALYZE) and large
+    # parallel seq scans need DSM above Docker's 64 MB /dev/shm default;
+    # with the default they fail with "could not resize shared memory
+    # segment ... No space left on device" and autovacuum stats go stale.
+    shm_size: "512m"
     environment:
       POSTGRES_USER: bahnhof
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
