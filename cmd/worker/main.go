@@ -94,6 +94,10 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 		stationResult, err := iris.FetchStationBoard(ctx, p.Eva)
 		if err != nil {
 			result = "fetch_error"
+			// Surface every failed attempt: network flaps (recurring on this
+			// homeserver) are otherwise invisible until a task exhausted its
+			// retries — asynq only logs exhaustion, not the individual attempt.
+			log.Printf("WARN fetch %s failed: %v", p.Eva, err)
 			// IRIS answers HTTP 400 for EVAs without an IRIS Betriebsstelle.
 			// Mark the station no_iris so the scheduler skips it from now on
 			// (no more wasted requests), then stop retrying this task.

@@ -444,6 +444,22 @@
         "overrides": []
       },
       "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "IRIS network errors (5m)",
+      "description": "Failed IRIS fetch attempts (network_error + any non-200 HTTP status) as 5m rate. Home-DSL flaps show up here within a scrape cycle — retries absorb a flap, so the dataset has no gap even while this peaks.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "x": 0, "y": 39, "w": 12, "h": 6 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (endpoint) (rate(verspaetet_iris_fetch_total{result!=\"ok\"}[5m]))", "legendFormat": "{{endpoint}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "min": 0, "custom": { "fillOpacity": 10, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
     }
   ]
 }
