@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"verspaetet/shared"
 )
 
 func loadXMLFixture(t *testing.T, name string) *Timetable {
@@ -248,5 +250,50 @@ func TestTripDateFromStopID(t *testing.T) {
 		if !se.TripDate.Equal(want) {
 			t.Errorf("%s: TripDate = %v, want %v", id, se.TripDate, want)
 		}
+	}
+}
+
+func TestPlanBaseline(t *testing.T) {
+	// The plan fixture has 3 stops: one dp-only (ICE 577, pt 10:00),
+	// one ar+dp (S 8, pt 10:44 both), one dp-only (ICE 990, pt 12:00).
+	tt := loadXMLFixture(t, "iris_plan.xml")
+	rows := planBaseline(tt)
+	if len(rows) != 3 {
+		t.Fatalf("planBaseline rows = %d, want 3", len(rows))
+	}
+	byID := map[string]shared.PlanBaselineRow{}
+	for _, r := range rows {
+		byID[r.StopID] = r
+	}
+	dpOnly, ok := byID["-7874571842864554321-2609041000-12"]
+	if !ok {
+		t.Fatal("ICE 577 stop missing from baseline")
+	}
+	if dpOnly.ArrivalPT != nil {
+		t.Errorf("dp-only stop must have nil ArrivalPT, got %v", dpOnly.ArrivalPT)
+	}
+	if dpOnly.DeparturePT == nil {
+		t.Fatal("dp-only stop needs DeparturePT")
+	}
+	want := mustParseUTC(t, "2609041000")
+	if !dpOnly.DeparturePT.Equal(want) {
+		t.Errorf("DeparturePT = %v, want %v", dpOnly.DeparturePT, want)
+	}
+	arAndDP, ok := byID["-7874571842864554322-2609041044-3"]
+	if !ok {
+		t.Fatal("S 8 stop missing from baseline")
+	}
+	if arAndDP.ArrivalPT == nil || arAndDP.DeparturePT == nil {
+		t.Fatalf("ar+dp stop needs both, got %v / %v", arAndDP.ArrivalPT, arAndDP.DeparturePT)
+	}
+	wantS8 := mustParseUTC(t, "2609041044")
+	if !arAndDP.ArrivalPT.Equal(wantS8) || !arAndDP.DeparturePT.Equal(wantS8) {
+		t.Errorf("S 8 pts = %v / %v, want %v", arAndDP.ArrivalPT, arAndDP.DeparturePT, wantS8)
+	}
+}
+
+func TestPlanBaselineEmpty(t *testing.T) {
+	if got := planBaseline(&Timetable{}); len(got) != 0 {
+		t.Errorf("empty timetable must yield no baseline rows, got %d", len(got))
 	}
 }

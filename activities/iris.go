@@ -218,21 +218,45 @@ func janitorPlanCache(nowDayHour string) {
 // fetchPlanHour returns the cached /plan slice for one (eva, hour) or
 // fetches it. Errors fall back to an empty timetable (hour without traffic
 // is not fatal).
-func fetchPlanHour(ctx context.Context, eva string, h time.Time) (*Timetable, error) {
+func fetchPlanHour(ctx context.Context, eva string, h time.Time) (*Timetable, bool, error) {
 	dayHour := h.Format("06010215")
 	key := planCacheKey(eva, dayHour)
 	if v, ok := planCache.Load(key); ok {
-		return v.(*Timetable), nil
+		return v.(*Timetable), false, nil
 	}
 	tt, err := irisGet(ctx, fmt.Sprintf("/plan/%s/%s/%s", eva, h.Format("060102"), h.Format("15")))
 	if err != nil {
-		return &Timetable{}, err
+		return &Timetable{}, false, err
 	}
 	planCache.Store(key, tt)
 	if h.Minute()%15 == 0 { // occasional cleanup
 		go janitorPlanCache(dayHour)
 	}
-	return tt, nil
+	return tt, true, nil
+}
+
+// planBaseline extracts the scheduled times (pt) of every stop in a plan
+// document — the reference the fchg document usually omits.
+func planBaseline(tt *Timetable) []shared.PlanBaselineRow {
+	rows := make([]shared.PlanBaselineRow, 0, len(tt.Stops))
+	for i := range tt.Stops {
+		s := &tt.Stops[i]
+		row := shared.PlanBaselineRow{StopID: s.ID}
+		if s.AR != nil && s.AR.PT != "" {
+			if t, err := parseIrisTime(s.AR.PT); err == nil {
+				row.ArrivalPT = &t
+			}
+		}
+		if s.DP != nil && s.DP.PT != "" {
+			if t, err := parseIrisTime(s.DP.PT); err == nil {
+				row.DeparturePT = &t
+			}
+		}
+		if row.ArrivalPT != nil || row.DeparturePT != nil {
+			rows = append(rows, row)
+		}
+	}
+	return rows
 }
 
 // FetchStationBoard fetches one station's COMPLETE board (both directions)
@@ -259,7 +283,7 @@ func (a *Iris) FetchStationBoard(ctx context.Context, eva string) (shared.FetchS
 	// Static baseline for the current hour (cached; next-hour trips are
 	// captured by the next cycle's plan — plan data never changes).
 	now := time.Now().In(berlin)
-	plan, _ := fetchPlanHour(ctx, eva, now)
+	plan, planFresh, _ := fetchPlanHour(ctx, eva, now)
 
 	// Merge: plan provides the baseline (tl/pt/pp/ppth/pde), fchg overlays
 	// the changed fields (ct/cp/cpth/cs/cde).
@@ -295,7 +319,12 @@ func (a *Iris) FetchStationBoard(ctx context.Context, eva string) (shared.FetchS
 			events = append(events, se)
 		}
 	}
-	return shared.FetchStationBoardResult{Events: events, ScrapedAt: scrapedAt}, nil
+	return shared.FetchStationBoardResult{
+		Events:       events,
+		ScrapedAt:    scrapedAt,
+		PlanBaseline: planBaseline(plan),
+		PlanFresh:    planFresh,
+	}, nil
 }
 
 // mergeStop overlays an fchg stop onto its plan twin: changed fields from

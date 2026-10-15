@@ -31,6 +31,22 @@ type StopEvent struct {
 type FetchStationBoardResult struct {
 	Events    []StopEvent
 	ScrapedAt time.Time
+
+	// PlanBaseline carries the scheduled times (pt) from the freshly fetched
+	// /plan hour, per stop and direction. The fchg document omits pt for ~90%
+	// of its events; rows persisted while a trip was still outside the current
+	// plan hour therefore carry the communicated time in planned_time (their
+	// delay is masked to 0). When a plan hour arrives (PlanFresh), the worker
+	// backfills already-persisted rows of these stops with the true schedule.
+	PlanBaseline []PlanBaselineRow
+	PlanFresh    bool
+}
+
+// PlanBaselineRow is one stop's scheduled arrival/departure from /plan.
+type PlanBaselineRow struct {
+	StopID      string
+	ArrivalPT   *time.Time
+	DeparturePT *time.Time
 }
 
 // PersistResult is the output of PersistStopEvent.

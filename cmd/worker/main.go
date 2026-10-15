@@ -160,6 +160,18 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 			newNames = append(newNames, pr.NewStations...)
 		}
 
+		// A freshly fetched plan hour pins the true scheduled times onto
+		// earlier snapshots of its stops (fchg omits pt for ~90% of events;
+		// until the plan hour arrives, those rows carry the communicated
+		// time as planned_time and their delay reads as 0).
+		if stationResult.PlanFresh && len(stationResult.PlanBaseline) > 0 {
+			if n, err := processor.BackfillPlanned(ctx, p.Eva, stationResult.PlanBaseline); err != nil {
+				log.Printf("WARN backfill planned %s: %v", p.Eva, err)
+			} else if n > 0 {
+				log.Printf("backfill planned %s: %d rows pinned", p.Eva, n)
+			}
+		}
+
 		// Discovery: record unresolved names for the next StaDa import.
 		if len(newNames) > 0 {
 			if err := processor.RecordPendingStations(ctx, newNames, p.Eva); err != nil {

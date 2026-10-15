@@ -219,6 +219,49 @@ INSERT INTO stop_events (
 	}, nil
 }
 
+// BackfillPlanned pins the true scheduled time onto already-persisted rows of
+// stops whose /plan hour just arrived. Rationale: the fchg document omits pt
+// for ~90% of events, so rows persisted while the trip was outside the
+// current plan hour carry the communicated time as planned_time (delay
+// masked to 0). When the plan hour is fetched, this repairs those rows —
+// without any extra API request, using data the scraper already downloads.
+// Idempotent: rows whose planned_time already matches are not touched.
+func (a *Process) BackfillPlanned(ctx context.Context, eva string, baseline []shared.PlanBaselineRow) (int64, error) {
+	if a.Pool == nil || len(baseline) == 0 {
+		return 0, nil
+	}
+	var ids, dirs []string
+	var pts []time.Time
+	for _, r := range baseline {
+		if r.ArrivalPT != nil {
+			ids = append(ids, r.StopID)
+			dirs = append(dirs, "arrival")
+			pts = append(pts, *r.ArrivalPT)
+		}
+		if r.DeparturePT != nil {
+			ids = append(ids, r.StopID)
+			dirs = append(dirs, "departure")
+			pts = append(pts, *r.DeparturePT)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	ct, err := a.Pool.Exec(ctx, `
+		UPDATE stop_events AS se
+		SET planned_time = b.pt
+		FROM unnest($2::text[], $3::text[], $4::timestamptz[]) AS b(stop_id, direction, pt)
+		WHERE se.station_eva = $1
+		  AND se.stop_id = b.stop_id
+		  AND se.direction = b.direction
+		  AND se.planned_time IS DISTINCT FROM b.pt`,
+		eva, ids, dirs, pts)
+	if err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
+}
+
 // RecordPendingStations inserts unseen route-path names into pending_stations
 // so the next StaDa refresh can try to resolve them.
 func (a *Process) RecordPendingStations(ctx context.Context, names []string, seenFrom string) error {
