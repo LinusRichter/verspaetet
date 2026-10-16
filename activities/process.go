@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"verspaetet/metrics"
@@ -263,7 +264,7 @@ func (a *Process) BackfillPlanned(ctx context.Context, eva string, baseline []sh
 	dirs := make([]string, len(rows))
 	var pts []time.Time
 	var pps []string
-	var ppths [][]string
+	var ppths []string
 	pdes := make([]string, len(rows))
 	for i, r := range rows {
 		ids[i] = r.stopID
@@ -279,10 +280,7 @@ func (a *Process) BackfillPlanned(ctx context.Context, eva string, baseline []sh
 		} else {
 			pps = append(pps, "")
 		}
-		if r.ppth == nil {
-			r.ppth = []string{}
-		}
-		ppths = append(ppths, r.ppth)
+		ppths = append(ppths, strings.Join(r.ppth, "|"))
 	}
 
 	var total int64
@@ -318,15 +316,17 @@ func (a *Process) BackfillPlanned(ctx context.Context, eva string, baseline []sh
 	total += ct.RowsAffected()
 
 	// via_path: fill empty with the planned route (communicated changes stay).
+	// The path travels pipe-joined (Postgres has no true 2D arrays — unnest
+	// on text[][] would flatten to text rows) and is split back in SQL.
 	ct, err = a.Pool.Exec(ctx, `
 		UPDATE stop_events AS se
-		SET via_path = b.ppth
-		FROM unnest($2::text[], $3::text[], $4::text[][]) AS b(stop_id, direction, ppth)
+		SET via_path = string_to_array(b.ppth, '|')
+		FROM unnest($2::text[], $3::text[], $4::text[]) AS b(stop_id, direction, ppth)
 		WHERE se.station_eva = $1
 		  AND se.stop_id = b.stop_id
 		  AND se.direction = b.direction
 		  AND (se.via_path IS NULL OR cardinality(se.via_path) = 0)
-		  AND cardinality(b.ppth) > 0`,
+		  AND b.ppth <> ''`,
 		eva, ids, dirs, ppths)
 	if err != nil {
 		return total, err
