@@ -12,7 +12,7 @@ verspaetet (German for "delayed") is a proof-of-concept that collects departure 
 
 Monthly Parquet chunks of delay-evolution snapshots for all German IRIS stations.
 
-- **What:** per train stop: planned/actual time, delay, platform (planned/actual), cancellation, line category, train number, operator, route path. Multiple snapshots per train stop = how the communicated delay evolved over time (the unique value of this dataset: endpoint-only "final delay" data exists elsewhere; this records the whole curve).
+- **What:** per train stop: planned/actual time, delay, platform (planned/actual), cancellation, line category, public line label (IRIS `l` attribute, e.g. S12 — `train_number` is the operational trip number, 5-digit for S-Bahn), train number, operator, route path. Multiple snapshots per train stop = how the communicated delay evolved over time (the unique value of this dataset: endpoint-only "final delay" data exists elsewhere; this records the whole curve).
 - **Coverage:** all ~5,400 IRIS-active stations, one snapshot every 40 minutes (same cadence for every station), both directions from one request per station.
 - **Gaps:** known downtime is documented per chunk in `manifest.json` (`coverage.downtimes`) and the chunk README; `coverage.missing_days` lists operating days without any data.
 - **Format:** Parquet (zstd). On HuggingFace: one folder per operating month at `<YYYY-MM>/` containing `stop_events_<YYYY-MM>.parquet`, `stations.parquet` (full registry, refreshed each export), `manifest.json` (SHA256, coverage, schema version) and a per-month `README.md` dataset card. A root `README.md` is regenerated on each export and indexes all chunks. Local copies mirror the same layout under `/exports/<YYYY-MM>/`.

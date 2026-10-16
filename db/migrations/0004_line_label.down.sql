@@ -1,0 +1,1 @@
+ALTER TABLE stop_events DROP COLUMN IF EXISTS line_label;

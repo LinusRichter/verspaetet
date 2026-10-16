@@ -235,24 +235,44 @@ func fetchPlanHour(ctx context.Context, eva string, h time.Time) (*Timetable, bo
 	return tt, true, nil
 }
 
-// planBaseline extracts the scheduled times (pt) of every stop in a plan
-// document — the reference the fchg document usually omits.
+// planBaseline extracts the scheduled fields (pt/pp/ppth/pde) of every
+// stop in a plan document — the reference the fchg document usually omits.
 func planBaseline(tt *Timetable) []shared.PlanBaselineRow {
 	rows := make([]shared.PlanBaselineRow, 0, len(tt.Stops))
 	for i := range tt.Stops {
 		s := &tt.Stops[i]
 		row := shared.PlanBaselineRow{StopID: s.ID}
-		if s.AR != nil && s.AR.PT != "" {
-			if t, err := parseIrisTime(s.AR.PT); err == nil {
-				row.ArrivalPT = &t
+		if s.AR != nil {
+			if s.AR.PT != "" {
+				if t, err := parseIrisTime(s.AR.PT); err == nil {
+					row.ArrivalPT = &t
+				}
 			}
-		}
-		if s.DP != nil && s.DP.PT != "" {
-			if t, err := parseIrisTime(s.DP.PT); err == nil {
-				row.DeparturePT = &t
+			if s.AR.PP != "" {
+				v := s.AR.PP
+				row.ArrivalPP = &v
 			}
+			if s.AR.PPTH != "" {
+				row.ArrivalPPTH = strings.Split(s.AR.PPTH, "|")
+			}
+			row.ArrivalPDE = s.AR.PDE
 		}
-		if row.ArrivalPT != nil || row.DeparturePT != nil {
+		if s.DP != nil {
+			if s.DP.PT != "" {
+				if t, err := parseIrisTime(s.DP.PT); err == nil {
+					row.DeparturePT = &t
+			}
+			}
+			if s.DP.PP != "" {
+				v := s.DP.PP
+				row.DeparturePP = &v
+			}
+			if s.DP.PPTH != "" {
+				row.DeparturePPTH = strings.Split(s.DP.PPTH, "|")
+			}
+			row.DeparturePDE = s.DP.PDE
+		}
+		if row.ArrivalPT != nil || row.DeparturePT != nil || row.ArrivalPP != nil || row.DeparturePP != nil {
 			rows = append(rows, row)
 		}
 	}
@@ -402,6 +422,13 @@ func irisEventToStopEvent(stop *IrisStop, ev *IrisEvent, eva, direction string, 
 		TripKind:     stop.TL.T,
 		ScrapedAt:    scrapedAt,
 	}
+
+	// Public line label (l attribute) — the consumer-facing line number
+	// (e.g. "12" for an S12). tl.n is NOT that for S-Bahn: it usually holds
+	// the 5-digit operational trip number. Captured independently so line
+	// statistics can use the real public line (fchg-only events without
+	// <tl> already parse it via splitLineLabel).
+	se.LineLabel = ev.L
 
 	// Fallback for fchg-only stops without <tl>: the per-event line
 	// indicator (l, e.g. "RB34", "ICE577", "S8") carries the same info.

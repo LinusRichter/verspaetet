@@ -93,18 +93,18 @@ WITH latest AS (
 )
 INSERT INTO stop_events (
   scrape_run_id, station_eva, direction, stop_id, trip_date,
-  line_category, train_number, owner, trip_kind,
+  line_category, train_number, line_label, owner, trip_kind,
   direction_name, via_path, planned_time, actual_time,
   planned_platform, platform, cancelled, scraped_at
 )
-  SELECT $4, $1, $2, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+  SELECT $4, $1, $2, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
   WHERE NOT EXISTS (
     SELECT 1 FROM latest
-    WHERE latest.actual_time    IS NOT DISTINCT FROM $13
-      AND latest.platform       IS NOT DISTINCT FROM $15
-      AND latest.direction_name IS NOT DISTINCT FROM $10
-      AND latest.via_path       IS NOT DISTINCT FROM $11
-      AND latest.cancelled      IS NOT DISTINCT FROM $16
+    WHERE latest.actual_time    IS NOT DISTINCT FROM $14
+      AND latest.platform       IS NOT DISTINCT FROM $16
+      AND latest.direction_name IS NOT DISTINCT FROM $11
+      AND latest.via_path       IS NOT DISTINCT FROM $12
+      AND latest.cancelled      IS NOT DISTINCT FROM $17
   )
   ON CONFLICT (station_eva, direction, stop_id, scraped_at) DO NOTHING`
 
@@ -134,6 +134,10 @@ INSERT INTO stop_events (
 		if ev.TrainNumber != "" {
 			trainNumber = ev.TrainNumber
 		}
+		var lineLabel interface{}
+		if ev.LineLabel != "" {
+			lineLabel = ev.LineLabel
+		}
 		var owner interface{}
 		if ev.Owner != "" {
 			owner = ev.Owner
@@ -141,7 +145,7 @@ INSERT INTO stop_events (
 		ct, err := tx.Exec(ctx, upsertSQL,
 			stationEva, ev.Direction, ev.StopID,
 			scrapeRunID, tripDate,
-			ev.LineCategory, trainNumber, owner, ev.TripKind,
+			ev.LineCategory, trainNumber, lineLabel, owner, ev.TripKind,
 			ev.DirectionName, viaPath, ev.PlannedTime, actualTime,
 			plannedPlatform, platform, ev.Cancelled, ev.ScrapedAt,
 		)
@@ -219,34 +223,70 @@ INSERT INTO stop_events (
 	}, nil
 }
 
-// BackfillPlanned pins the true scheduled time onto already-persisted rows of
-// stops whose /plan hour just arrived. Rationale: the fchg document omits pt
-// for ~90% of events, so rows persisted while the trip was outside the
-// current plan hour carry the communicated time as planned_time (delay
-// masked to 0). When the plan hour is fetched, this repairs those rows —
+// BackfillPlanned pins the scheduled reference fields from a freshly fetched
+// /plan hour onto already-persisted rows of its stops. Rationale: the fchg
+// document omits pt/pp/ppth/pde for ~90% of its events, so rows persisted
+// while a trip was outside the current plan hour carry the communicated time
+// as planned_time (delay masked to 0), no planned platform, and empty route/
+// endpoint fields. When the plan hour is fetched, this repairs those rows —
 // without any extra API request, using data the scraper already downloads.
-// Idempotent: rows whose planned_time already matches are not touched.
+// Fill semantics per field:
+//   - planned_time: pin to the scheduled time (any mismatch corrected)
+//   - planned_platform: fill NULLs (planned platform is static per stop)
+//   - via_path: fill empty (the planned route; communicated changes never
+//     overwritten)
+//   - direction_name: fill empty (planned distant endpoint)
+// Idempotent: rows already matching are not touched.
 func (a *Process) BackfillPlanned(ctx context.Context, eva string, baseline []shared.PlanBaselineRow) (int64, error) {
 	if a.Pool == nil || len(baseline) == 0 {
 		return 0, nil
 	}
-	var ids, dirs []string
-	var pts []time.Time
+	type row struct {
+		stopID, dir, pde string
+		pt               *time.Time
+		pp               *string
+		ppth             []string
+	}
+	var rows []row
 	for _, r := range baseline {
-		if r.ArrivalPT != nil {
-			ids = append(ids, r.StopID)
-			dirs = append(dirs, "arrival")
-			pts = append(pts, *r.ArrivalPT)
+		if r.ArrivalPT != nil || r.ArrivalPP != nil || len(r.ArrivalPPTH) > 0 || r.ArrivalPDE != "" {
+			rows = append(rows, row{r.StopID, "arrival", r.ArrivalPDE, r.ArrivalPT, r.ArrivalPP, r.ArrivalPPTH})
 		}
-		if r.DeparturePT != nil {
-			ids = append(ids, r.StopID)
-			dirs = append(dirs, "departure")
-			pts = append(pts, *r.DeparturePT)
+		if r.DeparturePT != nil || r.DeparturePP != nil || len(r.DeparturePPTH) > 0 || r.DeparturePDE != "" {
+			rows = append(rows, row{r.StopID, "departure", r.DeparturePDE, r.DeparturePT, r.DeparturePP, r.DeparturePPTH})
 		}
 	}
-	if len(ids) == 0 {
+	if len(rows) == 0 {
 		return 0, nil
 	}
+	ids := make([]string, len(rows))
+	dirs := make([]string, len(rows))
+	var pts []time.Time
+	var pps []string
+	var ppths [][]string
+	pdes := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.stopID
+		dirs[i] = r.dir
+		pdes[i] = r.pde
+		if r.pt != nil {
+			pts = append(pts, *r.pt)
+		} else {
+			pts = append(pts, time.Time{})
+		}
+		if r.pp != nil {
+			pps = append(pps, *r.pp)
+		} else {
+			pps = append(pps, "")
+		}
+		if r.ppth == nil {
+			r.ppth = []string{}
+		}
+		ppths = append(ppths, r.ppth)
+	}
+
+	var total int64
+	// planned_time: pin to schedule.
 	ct, err := a.Pool.Exec(ctx, `
 		UPDATE stop_events AS se
 		SET planned_time = b.pt
@@ -257,9 +297,58 @@ func (a *Process) BackfillPlanned(ctx context.Context, eva string, baseline []sh
 		  AND se.planned_time IS DISTINCT FROM b.pt`,
 		eva, ids, dirs, pts)
 	if err != nil {
-		return 0, err
+		return total, err
 	}
-	return ct.RowsAffected(), nil
+	total += ct.RowsAffected()
+
+	// planned_platform: fill NULLs with the planned platform.
+	ct, err = a.Pool.Exec(ctx, `
+		UPDATE stop_events AS se
+		SET planned_platform = b.pp
+		FROM unnest($2::text[], $3::text[], $4::text[]) AS b(stop_id, direction, pp)
+		WHERE se.station_eva = $1
+		  AND se.stop_id = b.stop_id
+		  AND se.direction = b.direction
+		  AND se.planned_platform IS NULL
+		  AND b.pp <> ''`,
+		eva, ids, dirs, pps)
+	if err != nil {
+		return total, err
+	}
+	total += ct.RowsAffected()
+
+	// via_path: fill empty with the planned route (communicated changes stay).
+	ct, err = a.Pool.Exec(ctx, `
+		UPDATE stop_events AS se
+		SET via_path = b.ppth
+		FROM unnest($2::text[], $3::text[], $4::text[][]) AS b(stop_id, direction, ppth)
+		WHERE se.station_eva = $1
+		  AND se.stop_id = b.stop_id
+		  AND se.direction = b.direction
+		  AND (se.via_path IS NULL OR cardinality(se.via_path) = 0)
+		  AND cardinality(b.ppth) > 0`,
+		eva, ids, dirs, ppths)
+	if err != nil {
+		return total, err
+	}
+	total += ct.RowsAffected()
+
+	// direction_name: fill empty with the planned distant endpoint.
+	ct, err = a.Pool.Exec(ctx, `
+		UPDATE stop_events AS se
+		SET direction_name = b.pde
+		FROM unnest($2::text[], $3::text[], $4::text[]) AS b(stop_id, direction, pde)
+		WHERE se.station_eva = $1
+		  AND se.stop_id = b.stop_id
+		  AND se.direction = b.direction
+		  AND (se.direction_name IS NULL OR se.direction_name = '')
+		  AND b.pde <> ''`,
+		eva, ids, dirs, pdes)
+	if err != nil {
+		return total, err
+	}
+	total += ct.RowsAffected()
+	return total, nil
 }
 
 // RecordPendingStations inserts unseen route-path names into pending_stations

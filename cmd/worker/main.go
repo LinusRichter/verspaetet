@@ -184,7 +184,7 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 
 // makeExportMonthHandler exports one operating month (Parquet + manifest)
 // into EXPORTS_DIR (default /exports). Schema version is configurable via
-// DATASET_SCHEMA_VERSION (default v0.1-beta).
+// DATASET_SCHEMA_VERSION (default v0.2).
 func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Task) error {
 	return func(ctx context.Context, t *asynq.Task) error {
 		result := "ok"
@@ -198,7 +198,7 @@ func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Tas
 			return fmt.Errorf("invalid year/month %d/%d: %w", p.Year, p.Month, asynq.SkipRetry)
 		}
 		outDir := envOr("EXPORTS_DIR", "/exports")
-		schema := envOr("DATASET_SCHEMA_VERSION", "v0.1-beta")
+		schema := envOr("DATASET_SCHEMA_VERSION", "v0.2")
 		chunkName := fmt.Sprintf("%04d-%02d", p.Year, p.Month)
 		m, err := activities.ExportMonth(ctx, pool, filepath.Join(outDir, chunkName), p.Year, p.Month, schema)
 		if err != nil {

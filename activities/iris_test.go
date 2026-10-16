@@ -297,3 +297,59 @@ func TestPlanBaselineEmpty(t *testing.T) {
 		t.Errorf("empty timetable must yield no baseline rows, got %d", len(got))
 	}
 }
+
+func TestLineLabelCaptured(t *testing.T) {
+	// The l attribute is the public line label — must be captured even when
+	// <tl> is present (tl.n is the operational trip number for S-Bahn, not
+	// the line number). Fixture: ICE 577 dp has l="577".
+	tt := loadXMLFixture(t, "iris_fchg.xml")
+	se, ok := irisEventToStopEvent(&tt.Stops[0], tt.Stops[0].DP, "8000105", "departure", time.Now().UTC())
+	if !ok {
+		t.Fatal("mapping failed")
+	}
+	if se.LineLabel != "577" {
+		t.Errorf("LineLabel = %q, want \"577\"", se.LineLabel)
+	}
+	// tl fields stay as before.
+	if se.LineCategory != "ICE" || se.TrainNumber != "577" {
+		t.Errorf("tl fields changed: %+v", se)
+	}
+}
+
+func TestPlanBaselineFull(t *testing.T) {
+	tt := loadXMLFixture(t, "iris_plan.xml")
+	rows := planBaseline(tt)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(rows))
+	}
+	var s8 shared.PlanBaselineRow
+	for _, r := range rows {
+		if r.StopID == "-7874571842864554322-2609041044-3" {
+			s8 = r
+		}
+	}
+	if s8.StopID == "" {
+		t.Fatal("S 8 baseline row missing")
+	}
+	if s8.ArrivalPP == nil || *s8.ArrivalPP != "101" {
+		t.Errorf("ArrivalPP = %v, want 101", s8.ArrivalPP)
+	}
+	if len(s8.ArrivalPPTH) != 2 || s8.ArrivalPPTH[1] != "Frankfurt(Main)Taunusanlage" {
+		t.Errorf("ArrivalPPTH = %v", s8.ArrivalPPTH)
+	}
+	if s8.DeparturePP == nil || *s8.DeparturePP != "101" {
+		t.Errorf("DeparturePP = %v, want 101", s8.DeparturePP)
+	}
+	if len(s8.DeparturePPTH) != 2 || s8.DeparturePPTH[1] != "Hanau Hbf" {
+		t.Errorf("DeparturePPTH = %v", s8.DeparturePPTH)
+	}
+	// The fixture ar carries pde="Wiesbaden Hbf"; the dp carries cde
+	// (changed endpoint) — the plan baseline extracts pde only, so the
+	// dp's PDE stays empty.
+	if s8.ArrivalPDE != "Wiesbaden Hbf" {
+		t.Errorf("ArrivalPDE = %q, want Wiesbaden Hbf", s8.ArrivalPDE)
+	}
+	if s8.DeparturePDE != "" {
+		t.Errorf("DeparturePDE = %q, want empty", s8.DeparturePDE)
+	}
+}

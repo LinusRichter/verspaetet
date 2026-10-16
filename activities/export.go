@@ -36,6 +36,7 @@ type StopEventParquet struct {
 	StopID          string  `parquet:"stop_id"`
 	TripDate        string  `parquet:"trip_date"` // YYYY-MM-DD (empty = unknown)
 	LineCategory    string  `parquet:"line_category"`
+	LineLabel       string  `parquet:"line_label,optional"` // public line number (IRIS l), empty pre-2026-10-16
 	TrainNumber     string  `parquet:"train_number,optional"`
 	Owner           string  `parquet:"owner,optional"`
 	TripKind        string  `parquet:"trip_kind,optional"`
@@ -218,7 +219,7 @@ func exportStopEvents(ctx context.Context, pool *pgxpool.Pool, path string, star
 	rows, err := pool.Query(ctx, `
 		SELECT station_eva, direction, stop_id,
 		       to_char(trip_date, 'YYYY-MM-DD'),
-		       line_category, COALESCE(train_number,''), COALESCE(owner,''),
+		       line_category, COALESCE(line_label,''), COALESCE(train_number,''), COALESCE(owner,''),
 		       COALESCE(trip_kind,''), COALESCE(direction_name,''),
 		       array_to_string(via_path, '|'),
 		       EXTRACT(EPOCH FROM planned_time)::bigint,
@@ -258,13 +259,13 @@ func exportStopEvents(ctx context.Context, pool *pgxpool.Pool, path string, star
 
 	for rows.Next() {
 		var eva, dir, stopID, tripDate, lineCat string
-		var trainNumber, owner, tripKind, directionName, viaPath string
+		var lineLabel, trainNumber, owner, tripKind, directionName, viaPath string
 		var planned int64
 		var actual *int64
 		var plannedPlatform, platform *string
 		var cancelled bool
 		var scraped int64
-		if err := rows.Scan(&eva, &dir, &stopID, &tripDate, &lineCat,
+		if err := rows.Scan(&eva, &dir, &stopID, &tripDate, &lineCat, &lineLabel,
 			&trainNumber, &owner, &tripKind, &directionName, &viaPath,
 			&planned, &actual, &plannedPlatform, &platform, &cancelled, &scraped); err != nil {
 			return 0, "", "", err
@@ -272,7 +273,7 @@ func exportStopEvents(ctx context.Context, pool *pgxpool.Pool, path string, star
 		buf = append(buf, StopEventParquet{
 			StationEva: eva, Direction: dir, StopID: stopID,
 			TripDate: tripDate, LineCategory: lineCat,
-			TrainNumber: trainNumber, Owner: owner, TripKind: tripKind,
+			LineLabel: lineLabel, TrainNumber: trainNumber, Owner: owner, TripKind: tripKind,
 			DirectionName: directionName, ViaPath: viaPath,
 			PlannedTime: planned, ActualTime: actual,
 			PlannedPlatform: plannedPlatform, Platform: platform,

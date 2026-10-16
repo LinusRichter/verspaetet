@@ -14,6 +14,7 @@ type StopEvent struct {
 	TripDate        *time.Time
 	LineCategory    string // tl.c (ICE, RE, S, ...)
 	TrainNumber     string // tl.n
+	LineLabel       string // l-Attribut des Events — öffentliche Linienkennung (z.B. "12" bei S12); tl.n ist bei S-Bahnen oft die 5-stellige Betriebsnummer
 	Owner           string // tl.o
 	TripKind        string // tl.t (p/e/z/s/h/n)
 	DirectionName   string // pde/cde
@@ -42,11 +43,25 @@ type FetchStationBoardResult struct {
 	PlanFresh    bool
 }
 
-// PlanBaselineRow is one stop's scheduled arrival/departure from /plan.
+// PlanBaselineRow is one stop's scheduled fields from /plan.
 type PlanBaselineRow struct {
-	StopID      string
+	StopID string
+
+	// Scheduled times (pt).
 	ArrivalPT   *time.Time
 	DeparturePT *time.Time
+
+	// Planned platforms (pp) — static per stop.
+	ArrivalPP   *string
+	DeparturePP *string
+
+	// Planned route paths (ppth, pipe-separated) — static per stop.
+	ArrivalPPTH   []string
+	DeparturePPTH []string
+
+	// Planned distant endpoint (pde; usually only on departures).
+	ArrivalPDE   string
+	DeparturePDE string
 }
 
 // PersistResult is the output of PersistStopEvent.

@@ -403,7 +403,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 		  (SELECT count(*) FROM scrape_runs WHERE scraped_at > NOW() - INTERVAL '10 minutes'),
 		  (SELECT count(*) FROM stop_events WHERE scraped_at > NOW() - INTERVAL '10 minutes'),
 		  COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT max(scraped_at) FROM stop_events)))::int, -1),
-		  (SELECT count(*) FROM stations),
+		  (SELECT count(*) FROM stations WHERE NOT no_iris),
 		  0`).Scan(
 		&h.RecentRuns, &h.RecentEvents, &h.LastScrapeAgo, &h.ExpectedRuns, &h.FetchRate)
 	if err != nil {
