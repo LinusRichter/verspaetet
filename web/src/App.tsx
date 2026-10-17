@@ -18,7 +18,7 @@ const TABS: { id: Tab; label: string }[] = [
 ]
 
 function Shell(): ReactNode {
-  const { meta, metaError, nav, setTab, theme, toggleTheme } = useApp()
+  const { metaError, nav, setTab, theme, toggleTheme } = useApp()
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -28,7 +28,7 @@ function Shell(): ReactNode {
     <div className="app">
       <header>
         <div className="hdr-row">
-          <div className="brand">verspaetet<span className="sub">{meta?.day ?? ''}</span></div>
+          <div className="brand">verspaetet</div>
           <nav className="tabs">
             {TABS.map((t) => (
               <button key={t.id} className={`tab${nav.tab === t.id ? ' active' : ''}`} onClick={() => setTab(t.id)}>

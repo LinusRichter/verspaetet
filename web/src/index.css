@@ -99,7 +99,7 @@ td.t, th.t { text-align: right; white-space: nowrap; }
 .panel h3 { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; font-weight: normal; }
 .chipsline { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .chipslabel { align-self: center; font-size: 10px; }
-.lchip { background: var(--bg2); border: 1px solid var(--border); padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+.lchip { background: var(--bg2); border: 1px solid var(--border); color: var(--text); padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px; }
 .lchip:hover { border-color: var(--accent); }
 .grid2 { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); gap: 14px; }
 @media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
