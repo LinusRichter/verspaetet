@@ -30,13 +30,19 @@ header { background: var(--bg2); border-bottom: 1px solid var(--border); }
 .mini:hover { border-color: var(--accent); }
 .mini:disabled { opacity: .4; cursor: default; }
 
-/* ---------- Suche ---------- */
-.searchbox { position: relative; width: 340px; }
-.searchbox input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); font: inherit; padding: 5px 28px 5px 10px; outline: none; }
-.searchbox input:focus { border-color: var(--accent); }
-.searchbox .sic { position: absolute; right: 8px; top: 5px; color: var(--muted); pointer-events: none; }
-.searchres { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg2); border: 1px solid var(--border); z-index: 50; max-height: 340px; overflow-y: auto; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
-.searchbackdrop { position: fixed; inset: 0; z-index: 40; }
+/* ---------- Command-Palette ---------- */
+.palbackdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100; display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
+.palette { width: min(640px, 92vw); background: var(--bg2); border: 1px solid var(--border); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.palin { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.palin input { flex: 1; background: none; border: none; outline: none; color: var(--text); font: inherit; font-size: 15px; }
+.palico { color: var(--muted); font-size: 16px; }
+.palhint { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.palres { max-height: 50vh; overflow-y: auto; padding-bottom: 6px; }
+.palempty { padding: 22px 14px; color: var(--muted); font-size: 12px; }
+.sitem.hi { background: var(--bg3); }
+.sitem.hi b { color: var(--accent); }
+
+/* ---------- Suche: Suchergebnis-Klassen (Palette + Board-Combobox) ---------- */
 .sgroup { padding: 5px 10px 2px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
 .sitem { padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
 .sitem:hover { background: var(--bg3); }
