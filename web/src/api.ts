@@ -1,41 +1,50 @@
-import type { Station, Line, StopEvent, Route, TopDelay, Stats, Health, TripStop } from './types'
+// API-Client der Data-UI. Im Produktions-Build ruft er ausschließlich die
+// echten Endpunkte des Go-Servers auf. Im Dev-Modus (vite dev ohne VITE_API=1)
+// bedient der Mock aus mock.ts dieselben Verträge — dynamisch importiert,
+// damit Vite ihn aus dem Produktions-Build herausschneidet.
 
-// Relative base: the Go API serves both the static React files and the /api
-// endpoints on the same origin, so the browser resolves relative URLs against
-// whatever host it loaded the page from (localhost in dev, <pi-ip> in prod).
-// A hardcoded http://localhost:8080 would break when the UI is opened from
-// another machine (e.g. the PC loading the Pi's UI).
-const BASE = ''
+import type { BoardData, DayData, JourneyData, LineData, Meta, SearchResults } from './types'
 
-export async function fetchStations(): Promise<Station[]> {
-  const r = await fetch(`${BASE}/api/stations`)
-  return r.json()
+type Mock = {
+  meta(): Promise<Meta>
+  search(q: string): Promise<SearchResults>
+  board(station: string, at: number): Promise<BoardData>
+  journey(runId: string, station: string | null): Promise<JourneyData | null>
+  line(lineKey: string, station: string | null): Promise<LineData>
+  day(): Promise<DayData>
 }
-export async function fetchLines(slug: string): Promise<Line[]> {
-  const r = await fetch(`${BASE}/api/stations/${slug}/lines`)
-  return r.json()
+
+const USE_REAL = !import.meta.env.DEV || !!import.meta.env.VITE_API
+
+let mockPromise: Promise<Mock> | null = null
+function getMock(): Promise<Mock> {
+  mockPromise ??= import('./mock').then((m) => m.default as Mock)
+  return mockPromise
 }
-export async function fetchRoutes(slug: string): Promise<Route[]> {
-  const r = await fetch(`${BASE}/api/stations/${slug}/routes`)
-  return r.json()
+
+async function get<T>(path: string): Promise<T> {
+  const r = await fetch(path)
+  if (!r.ok) throw new Error(`API ${r.status}: ${path}`)
+  return r.json() as Promise<T>
 }
-export async function fetchEvents(slug: string, lineCategory: string): Promise<StopEvent[]> {
-  const r = await fetch(`${BASE}/api/stations/${slug}/lines/${encodeURIComponent(lineCategory)}/events`)
-  return r.json()
+
+async function call<T>(path: string, viaMock: (m: Mock) => Promise<T>): Promise<T> {
+  if (USE_REAL) return get<T>(path)
+  return viaMock(await getMock())
 }
-export async function fetchTopDelays(limit: number = 20): Promise<TopDelay[]> {
-  const r = await fetch(`${BASE}/api/delays/top?limit=${limit}`)
-  return r.json()
-}
-export async function fetchStats(): Promise<Stats> {
-  const r = await fetch(`${BASE}/api/stats`)
-  return r.json()
-}
-export async function fetchHealth(): Promise<Health> {
-  const r = await fetch(`${BASE}/api/health`)
-  return r.json()
-}
-export async function fetchTripStops(stopId: string): Promise<TripStop[]> {
-  const r = await fetch(`${BASE}/api/trips/${encodeURIComponent(stopId)}/stops`)
-  return r.json()
+
+export const api = {
+  meta: () => call<Meta>('/api/meta', (m) => m.meta()),
+  search: (q: string) => call<SearchResults>(`/api/search?q=${encodeURIComponent(q)}`, (m) => m.search(q)),
+  board: (station: string, at: number) =>
+    call<BoardData>(`/api/board?station=${encodeURIComponent(station)}&at=${at}`, (m) => m.board(station, at)),
+  journey: (runId: string, station: string | null) =>
+    call<JourneyData | null>(
+      `/api/journey?run=${encodeURIComponent(runId)}${station ? `&station=${encodeURIComponent(station)}` : ''}`,
+      (m) => m.journey(runId, station)),
+  line: (lineKey: string, station: string | null) =>
+    call<LineData>(
+      `/api/line?line=${encodeURIComponent(lineKey)}${station ? `&station=${encodeURIComponent(station)}` : ''}`,
+      (m) => m.line(lineKey, station)),
+  day: () => call<DayData>('/api/day', (m) => m.day()),
 }

@@ -1,52 +1,67 @@
-﻿import { useState } from 'react'
-import { StatsBar } from './components/StatsBar'
-import { StationList } from './components/StationList'
-import { LineList } from './components/LineList'
-import { EventTable } from './components/EventTable'
-import { RouteList } from './components/RouteList'
-import { TripView } from './components/TripView'
-import { TopDelays } from './components/TopDelays'
-import { Breadcrumb } from './components/Breadcrumb'
-import { HealthBadge } from './components/HealthBadge'
+import { useEffect, type ReactNode } from 'react'
+import { AppProvider, useApp } from './state'
+import type { Tab } from './types'
+import { ScrubBar } from './components/ScrubBar'
+import { SearchBox } from './components/SearchBox'
+import { Breadcrumbs } from './components/Breadcrumbs'
+import { Board } from './components/Board'
+import { Journey } from './components/Journey'
+import { LineView } from './components/LineView'
+import { DayView } from './components/DayView'
+import { ErrorBox } from './components/bits'
 
-function App() {
-  const [slug, setSlug] = useState<string | null>(null)
-  const [name, setName] = useState<string | null>(null)
-  const [line, setLine] = useState<string | null>(null)
-  const [trip, setTrip] = useState<string | null>(null)
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'board', label: 'Bahnhofstafel' },
+  { id: 'journey', label: 'Zuglauf' },
+  { id: 'line', label: 'Linie' },
+  { id: 'day', label: 'Übersicht' },
+]
 
-  const selectStation = (s: string, n: string) => { setSlug(s); setName(n); setLine(null); setTrip(null) }
-  const reset = () => { setSlug(null); setName(null); setLine(null); setTrip(null) }
-  const resetLine = () => { setLine(null); setTrip(null) }
-  const handleSelectStation = (s: string, n: string) => { setLine(null); setTrip(null); setSlug(s); setName(n) }
-  const handleSelectTrip = (stopId: string) => { setTrip(stopId) }
+function Shell(): ReactNode {
+  const { meta, metaError, nav, setTab, theme, toggleTheme } = useApp()
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
 
   return (
     <div className="app">
-      <div className="top-bar">
-        <StatsBar />
-        <div className="top-bar-right">
-          <HealthBadge />
-          <a href={`http://${window.location.hostname}:8082`} target="_blank" rel="noreferrer" className="ui-link">grafana</a>
+      <header>
+        <div className="hdr-row">
+          <div className="brand">verspaetet<span className="sub">{meta?.day ?? ''}</span></div>
+          <nav className="tabs">
+            {TABS.map((t) => (
+              <button key={t.id} className={`tab${nav.tab === t.id ? ' active' : ''}`} onClick={() => setTab(t.id)}>
+                {t.label}
+              </button>
+            ))}
+          </nav>
+          <SearchBox />
+          <div className="hdr-right">
+            <button className="mini" onClick={toggleTheme}>{theme === 'dark' ? '☀ hell' : '🌙 dunkel'}</button>
+          </div>
         </div>
-      </div>
-      <div className="main-layout">
-        <TopDelays />
-        <div className="content">
-          <Breadcrumb stationName={name} lineLabel={line} onReset={reset} onResetLine={resetLine} />
-          {!slug && <StationList onSelect={selectStation} />}
-          {slug && !line && (
-            <>
-              <LineList slug={slug} stationName={name!} onSelect={setLine} />
-              <RouteList slug={slug} stationName={name!} onSelectLine={setLine} onSelectStation={handleSelectStation} />
-            </>
-          )}
-          {slug && line && !trip && <EventTable slug={slug} lineLabel={line} stationName={name!} onSelectStation={handleSelectStation} onSelectTrip={handleSelectTrip} />}
-          {slug && line && trip && <TripView stopId={trip} lineLabel={line} onSelectStation={handleSelectStation} />}
-        </div>
-      </div>
+        {metaError ? <div className="scrub-row"><ErrorBox msg={`Meta: ${metaError}`} /></div> : <ScrubBar />}
+      </header>
+      <Breadcrumbs />
+      <main>
+        {nav.tab === 'board' && <Board />}
+        {nav.tab === 'journey' && <Journey />}
+        {nav.tab === 'line' && <LineView />}
+        {nav.tab === 'day' && <DayView />}
+      </main>
+      <footer>
+        Fahrten ≙ stop_id-Gruppen · Snapshots ≙ stop_events-Rows (scraped_at = Wissensstand) ·
+        alle Ansichten werden on demand geladen
+      </footer>
     </div>
   )
 }
 
-export default App
+export default function App(): ReactNode {
+  return (
+    <AppProvider>
+      <Shell />
+    </AppProvider>
+  )
+}
