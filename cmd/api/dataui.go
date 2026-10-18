@@ -168,6 +168,13 @@ type uiLineInfo struct {
 type uiSearchResults struct {
 	Stations []uiSearchStation `json:"stations"`
 	Lines    []uiSearchLine    `json:"lines"`
+
+	// Wenn der Query eine Uhrzeit enthielt („porz 14:30"):
+	Time *int `json:"time,omitempty"` // Minuten des Tages
+
+	// Wenn ein Bahnhof stark matchte: die Linien, die dort halten.
+	StationName  string         `json:"stationName,omitempty"`
+	StationLines []uiSearchLine `json:"stationLines,omitempty"`
 }
 
 type uiSearchStation struct {
@@ -350,15 +357,18 @@ type tripFact struct {
 type dataUI struct {
 	pool *pgxpool.Pool
 
-	dayCache  *ttlCache[dayData]    // key: YYYY-MM-DD; heute TTL, historisch ∞
+	dayCache  *ttlCache[dayData]     // key: YYYY-MM-DD; heute TTL, historisch ∞
 	stationLn *ttlCache[[]uiAltLine] // key: date|eva — Linien an einer Station
+
+	stationsOnce sync.Once
+	stations     []stationEntry // gesamt, im RAM (≈ 5.400 Zeilen)
 }
 
 func newDataUI(pool *pgxpool.Pool) *dataUI {
 	return &dataUI{
-		pool:       pool,
-		dayCache:   newTTLCache[dayData](10 * time.Minute),
-		stationLn:  newTTLCache[[]uiAltLine](10 * time.Minute),
+		pool:      pool,
+		dayCache:  newTTLCache[dayData](10 * time.Minute),
+		stationLn: newTTLCache[[]uiAltLine](10 * time.Minute),
 	}
 }
 
@@ -402,68 +412,231 @@ func (d *dataUI) handleMeta(w http.ResponseWriter, r *http.Request) {
 // Suche
 // ---------------------------------------------------------------------------
 
+// stationEntry: Station für die RAM-Suche (normalisierte Formen vorgebacken).
+type stationEntry struct {
+	Eva  string
+	Name string
+	Norm string // lowercase, diakritikfrei, nur [a-z0-9]
+}
+
+var umlautRepl = strings.NewReplacer(
+	"ä", "a", "ö", "o", "ü", "u", "ß", "ss",
+	"Ä", "a", "Ö", "o", "Ü", "u")
+
+// normName: robuste Normalisierung für Suche — "Köln Hbf"→"kolnhbf",
+// "S 6"→"s6", "RE 7"→"re7".
+func normName(s string) string {
+	s = strings.ToLower(umlautRepl.Replace(s))
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// normInput: Normalisierungs-Varianten der EINGABE — deckt sowohl "koln" als
+// auch "koeln"/"muenster" ab (zweite Variante nur, wenn sie abweicht).
+func normInput(q string) []string {
+	base := normName(q)
+	alt := normName(strings.NewReplacer("oe", "o", "ue", "u", "ae", "a", "OE", "o", "UE", "u", "AE", "a").Replace(q))
+	if alt == base {
+		return []string{base}
+	}
+	return []string{base, alt}
+}
+
+// Zeitmuster im Query — bewusst drei getrennte Muster statt Lookahead:
+//  1. „14:30“, „14.30", "14 uhr 30", "14h30"  (expliziter Trenner + Minuten)
+//  2. „1430“ (vierstellig am Stück)
+//  3. „14 uhr" / "7 uhr" (Stunde nur mit uhr-Suffix — „RE 7" bleibt Liniensuche)
+var timeWithSep = regexp.MustCompile(`(?:^|\s)([01]?\d|2[0-3])\s*(?::|\.|h|uhr)\s*([0-5]\d)(?:$|\s|:|\.)`)
+var timeAttached = regexp.MustCompile(`(?:^|\s)((?:[01]\d|2[0-3])[0-5]\d)(?:$|\s)`)
+var timeHourOnly = regexp.MustCompile(`(?:^|\s)([01]?\d|2[0-3])\s*uhr(?:$|\s)`)
+
+// parseTimeHint extrahiert die ERSTE Uhrzeit als Tagesminuten und gibt den
+// Rest-Query zurück (leer, wenn nichts übrig bleibt).
+func parseTimeHint(q string) (int, string, bool) {
+	cut := func(m []int) (int, string) {
+		num := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, q[m[0]:m[1]])
+		n := 0
+		for _, d := range num {
+			n = n*10 + int(d-'0')
+		}
+		var min int
+		if len(num) <= 2 { // nur Stunde
+			min = n * 60
+		} else { // hhmm vierstellig
+			min = (n/100)*60 + n%100
+		}
+		return min, strings.TrimSpace(q[:m[0]] + " " + q[m[1]:])
+	}
+	if m := timeWithSep.FindStringIndex(q); m != nil {
+		min, rest := cut(m)
+		return min, rest, true
+	}
+	if m := timeAttached.FindStringIndex(q); m != nil {
+		min, rest := cut(m)
+		return min, rest, true
+	}
+	if m := timeHourOnly.FindStringIndex(q); m != nil {
+		min, rest := cut(m)
+		return min, rest, true
+	}
+	return 0, q, false
+}
+
+// matchScore: 0 = exakt, 1 = Präfix, 2 = enthält, -1 = kein Treffer.
+func matchScore(norm string, variants []string) int {
+	best := -1
+	for _, v := range variants {
+		if v == "" {
+			continue
+		}
+		if norm == v {
+			return 0
+		}
+		if strings.HasPrefix(norm, v) {
+			if best == -1 || 1 < best {
+				best = 1
+			}
+		} else if strings.Contains(norm, v) && (best == -1 || 2 < best) {
+			best = 2
+		}
+	}
+	return best
+}
+
 func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if len(q) < 2 {
-		writeJSON(w, uiSearchResults{Stations: []uiSearchStation{}, Lines: []uiSearchLine{}})
+
+	// Uhrzeit im Query? („porz 14:30")
+	out := uiSearchResults{Stations: []uiSearchStation{}, Lines: []uiSearchLine{}}
+	var stationQ string
+	if t, rest, ok := parseTimeHint(q); ok {
+		tt := t
+		out.Time = &tt
+		q = rest
+	}
+	stationQ = strings.TrimSpace(q)
+	if stationQ == "" {
+		writeJSON(w, out)
 		return
 	}
 
-	// Stationen: Namens-Match, sortiert nach Kategorie (Kat. 1 zuerst).
-	stations := []uiSearchStation{}
-	rows, err := d.pool.Query(r.Context(), `
-		SELECT st.name,
-		       (SELECT count(*) FROM stop_events se
-		         WHERE se.station_eva = st.eva
-		           AND se.scraped_at >= now() - interval '1 day')::int AS n
-		FROM stations st
-		WHERE st.name ILIKE $1
-		ORDER BY st.category NULLS LAST, st.name
-		LIMIT 7`, "%"+q+"%")
-	if err != nil {
-		log.Printf("[dataui] search stations: %v", err)
-	} else {
-		for rows.Next() {
-			var s uiSearchStation
-			if rows.Scan(&s.Name, &s.N) == nil {
-				stations = append(stations, s)
-			}
+	// Stationen aus dem RAM-Index (fuzzy über normalisierte Formen).
+	d.ensureStations(r)
+	variants := normInput(stationQ)
+	type hit struct {
+		e     stationEntry
+		score int
+	}
+	hits := []hit{}
+	for _, e := range d.stations {
+		if s := matchScore(e.Norm, variants); s >= 0 {
+			hits = append(hits, hit{e, s})
 		}
-		rows.Close()
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].score != hits[j].score {
+			return hits[i].score < hits[j].score
+		}
+		return len(hits[i].e.Name) < len(hits[j].e.Name) // kürzer = konkreter
+	})
+	if len(hits) > 7 {
+		hits = hits[:7]
+	}
+	for _, h := range hits {
+		out.Stations = append(out.Stations, uiSearchStation{Name: h.e.Name, N: 0})
 	}
 
-	// Linien: aus den Tagesfakten (gecacht), Kontext disambiguiert.
-	lines := []uiSearchLine{}
+	// Linien: aus den Tagesfakten (gecacht) — normalisiert "s6"/"re7"-sicher.
 	if day, ok := d.loadDay(r, false); ok {
-		ql := strings.ToLower(q)
-		type entry struct{ cat, label, from, to string; n int }
-		byKey := map[string]entry{}
+		type entry struct {
+			cat, label, from, to string
+			n, score             int
+		}
+		byKey := map[string]*entry{}
 		for _, tf := range day.TripsOfDay {
 			key := lineKeyOf(tf.Cat, tf.Label)
-			if _, seen := byKey[key]; !seen {
-				byKey[key] = entry{tf.Cat, tf.Label, tf.DepFrom, tf.EndTo, 0}
-			}
 			e := byKey[key]
+			if e == nil {
+				e = &entry{cat: tf.Cat, label: tf.Label, from: tf.DepFrom, to: tf.EndTo}
+				byKey[key] = e
+			}
 			e.n++
-			byKey[key] = e
 		}
-		for key, e := range byKey {
+		for _, e := range byKey {
 			label := lineLabelOf(e.cat, e.label)
-			if !strings.Contains(strings.ToLower(label), ql) {
+			normCat := normName(e.cat) + normName(e.label) // "s"+"6" → "s6"
+			score := matchScore(normCat, variants)
+			if normName(e.label) != "" { // auch "6" allein matchen („6" zeigt S 6, RE 6 …)
+				if s2 := matchScore(normName(e.label), variants); s2 >= 0 && (score < 0 || s2+1 < score) {
+					score = s2 + 1
+				}
+			}
+			if score < 0 {
 				continue
 			}
-			lines = append(lines, uiSearchLine{
-				Key: key, Label: label, Cat: e.cat,
+			out.Lines = append(out.Lines, uiSearchLine{
+				Key: lineKeyOf(e.cat, e.label), Label: label, Cat: e.cat,
 				Ctx: e.from + " ⇢ " + e.to, N: e.n,
 			})
 		}
-		sort.Slice(lines, func(i, j int) bool { return lines[i].Label < lines[j].Label })
-		if len(lines) > 6 {
-			lines = lines[:6]
+		sort.SliceStable(out.Lines, func(i, j int) bool { return out.Lines[i].Label < out.Lines[j].Label })
+		if len(out.Lines) > 6 {
+			out.Lines = out.Lines[:6]
 		}
 	}
 
-	writeJSON(w, uiSearchResults{Stations: stations, Lines: lines})
+	// Starker Bahnhofs-Treffer? → Linien, die dort halten (Sektion 3).
+	if len(out.Stations) > 0 {
+		out.StationName = out.Stations[0].Name
+		if alt, _ := d.altLinesFor(r, uiLineInfo{}, out.StationName); len(alt) > 0 {
+			out.StationLines = []uiSearchLine{}
+			for _, l := range alt {
+				if len(out.StationLines) >= 6 {
+					break
+				}
+				out.StationLines = append(out.StationLines, uiSearchLine{
+					Key: l.Key, Label: l.Label, Cat: l.Cat, N: 0,
+					Ctx: "hält hier",
+				})
+			}
+		}
+	}
+
+	writeJSON(w, out)
+}
+
+// ensureStations lädt den Stations-Index einmalig in den RAM.
+func (d *dataUI) ensureStations(r *http.Request) {
+	d.stationsOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rows, err := d.pool.Query(ctx, `SELECT eva, name FROM stations ORDER BY name`)
+		if err != nil {
+			log.Printf("[dataui] stations load: %v", err)
+			return
+		}
+		defer rows.Close()
+		list := []stationEntry{}
+		for rows.Next() {
+			var e stationEntry
+			if err := rows.Scan(&e.Eva, &e.Name); err == nil {
+				e.Norm = normName(e.Name)
+				list = append(list, e)
+			}
+		}
+		d.stations = list
+		log.Printf("[dataui] stations index: %d entries", len(list))
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -930,11 +1103,11 @@ func buildLine(raw []rawRow, anchor time.Time, key, cat, label string) uiLineDat
 		Line: uiLineInfo{Key: key, Label: lineLabelOf(cat, label), Cat: cat},
 		Runs: runs,
 		Stats: uiLineStats{
-			N:   len(runs),
-			Cx:  cx,
-			P50: percentile(fin, 50),
-			P90: percentile(fin, 90),
-			Max: maxInt(fin),
+			N:    len(runs),
+			Cx:   cx,
+			P50:  percentile(fin, 50),
+			P90:  percentile(fin, 90),
+			Max:  maxInt(fin),
 			Punc: puncOf(fin),
 		},
 		AltLines: []uiAltLine{},
@@ -1040,9 +1213,9 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 
 	day := dayData{
 		TripsOfDay:  []tripFact{},
-		Hours:      []uiHourBar{},
+		Hours:       []uiHourBar{},
 		Leaderboard: []uiLeaderRow{},
-		Top:        []uiTopRow{},
+		Top:         []uiTopRow{},
 	}
 	hours := map[int][]int{}
 	perLine := map[string][]int{}

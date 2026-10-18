@@ -4,6 +4,7 @@ package main
 // (buildJourney / buildStop / buildBoard / buildLine) — ohne Datenbank.
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -193,7 +194,7 @@ func TestBuildLineAggregation(t *testing.T) {
 	anchor := day
 	mk := func(trip string, idx int, name string, plannedMin int, delayMin int) rawRow {
 		row := rawRow{StopID: trip + "-" + itoa(idx), Direction: "departure", Name: name,
-			Planned: ts(day, plannedMin), Scraped: ts(day, plannedMin - 10), Cat: "RE", Label: "7"}
+			Planned: ts(day, plannedMin), Scraped: ts(day, plannedMin-10), Cat: "RE", Label: "7"}
 		if delayMin > 0 {
 			row.Actual = strpTime(day, plannedMin+delayMin)
 		}
@@ -245,7 +246,7 @@ func itoa(n int) string {
 
 func TestTripKeyAndStopIdx(t *testing.T) {
 	cases := map[string][2]any{
-		"-479827450801391963-2610161150-6": {"-479827450801391963-2610161150", 6},
+		"-479827450801391963-2610161150-6":  {"-479827450801391963-2610161150", 6},
 		"3371964485750035452-2609221621-15": {"3371964485750035452-2609221621", 15},
 	}
 	for stopID, exp := range cases {
@@ -274,6 +275,86 @@ func TestJourneyRangeBounds(t *testing.T) {
 	for _, s := range out {
 		if s >= lo && s < hi {
 			t.Errorf("%s sollte NICHT im Bereich liegen", s)
+		}
+	}
+}
+
+func TestNormName(t *testing.T) {
+	cases := map[string]string{
+		"Köln Hbf":           "kolnhbf",
+		"S 6":                "s6",
+		"RE 7":               "re7",
+		"Münster(Westf)Hbf":  "munsterwestfhbf",
+		"Frankfurt(Main)Hbf": "frankfurtmainhbf",
+		"Straße":             "strasse",
+	}
+	for in, want := range cases {
+		if got := normName(in); got != want {
+			t.Errorf("normName(%q) = %q, will %q", in, got, want)
+		}
+	}
+}
+
+func TestNormInputVariants(t *testing.T) {
+	// "muenster" UND "munster" müssen beide etwas finden:
+	koln := normName("Köln Hbf") // "kolnhbf"
+	for _, v := range normInput("koeln") {
+		if matchScore(koln, []string{v}) >= 0 {
+			goto koelnOK
+		}
+	}
+	t.Error("\"koeln\" muss Köln Hbf finden")
+koelnOK:
+	for _, v := range normInput("münster") {
+		if matchScore(normName("Münster(Westf)Hbf"), []string{v}) >= 0 {
+			return
+		}
+	}
+	t.Error("\"münster\" muss Münster finden")
+}
+
+func TestMatchScoreLineLabels(t *testing.T) {
+	// "S6" zusammengeschrieben muss "S 6" finden (Kat+Label normalisiert):
+	normS6 := normName("S") + normName("6")
+	if matchScore(normS6, normInput("s6")) != 0 {
+		t.Error("s6 → S 6 muss exakt matchen")
+	}
+	if matchScore(normS6, normInput("S 6")) != 0 {
+		t.Error("S 6 → S 6 muss exakt matchen")
+	}
+	// "re7" → "RE 7":
+	if matchScore(normName("RE")+normName("7"), normInput("re7")) != 0 {
+		t.Error("re7 → RE 7 muss exakt matchen")
+	}
+	// "6" allein matcht über die Nummer (Score +1 = 2, enthält):
+	if s := matchScore(normName("S")+normName("6"), normInput("6")); s < 0 {
+		t.Error("\"6\" sollte S 6 als Kandidat liefern")
+	}
+	// Unsinn matcht nicht:
+	if matchScore(normS6, normInput("xyz")) >= 0 {
+		t.Error("xyz darf nicht matchen")
+	}
+}
+
+func TestParseTimeHint(t *testing.T) {
+	cases := []struct {
+		in   string
+		min  int
+		rest string
+		ok   bool
+	}{
+		{"porz 14:30", 870, "porz", true},
+		{"Porz 1430", 870, "Porz", true},
+		{"koeln 7 uhr", 420, "koeln", true},
+		{"14:30", 870, "", true},
+		{"muenster 14 uhr 30", 870, "muenster", true},
+		{"RE 7", 0, "RE 7", false}, // Liniensuche, keine Uhrzeit!
+		{"S6", 0, "S6", false},
+	}
+	for _, c := range cases {
+		min, rest, ok := parseTimeHint(c.in)
+		if ok != c.ok || (ok && (min != c.min || strings.TrimSpace(rest) != strings.TrimSpace(c.rest))) {
+			t.Errorf("parseTimeHint(%q) = (%d, %q, %v), will (%d, %q, %v)", c.in, min, rest, ok, c.min, c.rest, c.ok)
 		}
 	}
 }

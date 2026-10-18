@@ -7,11 +7,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import type { SearchResults } from '../types'
 import { useApp } from '../state'
-import { debounce } from '../lib'
+import { debounce, fmt } from '../lib'
 import { Spinner } from './bits'
 
 interface Item {
-  kind: 'line' | 'station'
+  kind: 'line' | 'station' | 'stationline'
   key: string
   title: string
   ctx: string
@@ -19,7 +19,7 @@ interface Item {
 }
 
 export function Palette({ open, onClose }: { open: boolean; onClose: () => void }): ReactNode {
-  const { goStation, goLine } = useApp()
+  const { goStation, goLine, setScrub } = useApp()
   const [q, setQ] = useState('')
   const [res, setRes] = useState<SearchResults | null>(null)
   const [loading, setLoading] = useState(false)
@@ -56,8 +56,19 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
     for (const s of res.stations) {
       out.push({
         kind: 'station', key: s.name, title: s.name,
-        ctx: `${s.n} Snapshots (24 h)`,
-        act: () => { onClose(); goStation(s.name) },
+        ctx: res.time != null ? `Tafel zum Wissensstand ${fmt(res.time)}` : 'Bahnhofstafel',
+        act: () => {
+          onClose()
+          goStation(s.name)
+          if (res.time != null) setScrub(res.time)
+        },
+      })
+    }
+    for (const l of res.stationLines ?? []) {
+      out.push({
+        kind: 'stationline', key: `sl-${l.key}`, title: l.label,
+        ctx: `hält an ${res.stationName ?? ''}`,
+        act: () => { onClose(); goLine(l.key) },
       })
     }
     return out
@@ -105,8 +116,17 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
                 const idx = items.indexOf(i)
                 return <PalRow key={i.key} item={i} idx={idx} sel={sel} setSel={setSel} pick={pick} />
               })}
-              {items.some((i) => i.kind === 'station') && <div className="sgroup">Bahnhöfe → Bahnhofstafel</div>}
+              {items.some((i) => i.kind === 'station') && (
+                <div className="sgroup">Bahnhöfe → Bahnhofstafel{res?.time != null ? ` · Wissensstand ${fmt(res.time)}` : ''}</div>
+              )}
               {items.filter((i) => i.kind === 'station').map((i) => {
+                const idx = items.indexOf(i)
+                return <PalRow key={i.key} item={i} idx={idx} sel={sel} setSel={setSel} pick={pick} />
+              })}
+              {items.some((i) => i.kind === 'stationline') && (
+                <div className="sgroup">Linien an „{res?.stationName}“ → Linien-Ansicht</div>
+              )}
+              {items.filter((i) => i.kind === 'stationline').map((i) => {
                 const idx = items.indexOf(i)
                 return <PalRow key={i.key} item={i} idx={idx} sel={sel} setSel={setSel} pick={pick} />
               })}

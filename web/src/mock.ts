@@ -125,6 +125,42 @@ function delay(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms))
 }
 
+/* ---------- Such-Normalisierung (identisch zum Go-Backend) ---------- */
+function normName(s: string): string {
+  return s.toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u')
+    .replace(/ß/g, 'ss').replace(/[^a-z0-9]/g, '')
+}
+function normInput(q: string): string[] {
+  const base = normName(q)
+  const alt = normName(q.replace(/oe/g, 'o').replace(/ue/g, 'u').replace(/ae/g, 'a'))
+  return alt === base ? [base] : [base, alt]
+}
+function matchScore(norm: string, variants: string[]): number {
+  let best = -1
+  for (const v of variants) {
+    if (!v) continue
+    if (norm === v) return 0
+    if (norm.startsWith(v)) best = best < 0 || best > 1 ? 1 : best
+    else if (norm.includes(v)) best = best < 0 ? 2 : Math.min(best, 2)
+  }
+  return best
+}
+function parseTimeHint(q: string): { min: number; rest: string } | null {
+  const pats = [
+    /(^|\s)([01]?\d|2[0-3])\s*(:|\.|h|uhr)\s*([0-5]\d)(?=$|\s|:|\.)/,
+    /(^|\s)((?:[01]\d|2[0-3])[0-5]\d)(?=$|\s)/,
+    /(^|\s)([01]?\d|2[0-3])\s*uhr(?=$|\s)/,
+  ]
+  for (const p of pats) {
+    const m = p.exec(q)
+    if (!m) continue
+    const digits = m[0].replace(/[^0-9]/g, '')
+    const min = digits.length <= 2 ? Number(digits) * 60 : Math.floor(Number(digits) / 100) * 60 + (Number(digits) % 100)
+    return { min, rest: (q.slice(0, m.index) + ' ' + q.slice(m.index + m[0].length)).trim() }
+  }
+  return null
+}
+
 function linesAtStation(name: string): LineDef[] {
   const seen = new Set<string>()
   const out: LineDef[] = []
@@ -162,20 +198,50 @@ export default {
 
   async search(q: string): Promise<SearchResults> {
     await delay(140)
-    const ql = q.toLowerCase()
+    let time: number | null = null
+    const th = parseTimeHint(q)
+    if (th) { time = th.min; q = th.rest }
+    const ql = q.trim()
+    const out: SearchResults = { stations: [], lines: [] }
+    if (ql.length === 0) { if (time != null) out.time = time; return out }
+
+    const variants = normInput(ql)
     const stations = [...STATIONS.entries()]
-      .filter(([name]) => name.toLowerCase().includes(ql))
-      .map(([name, v]) => ({ name, n: v.length }))
-      .sort((a, b) => b.n - a.n)
+      .map(([name, v]) => ({ name, n: v.length, score: matchScore(normName(name), variants) }))
+      .filter((s) => s.score >= 0)
+      .sort((a, b) => a.score - b.score || a.name.length - b.name.length)
       .slice(0, 7)
+    out.stations = stations.map(({ name, n }) => ({ name, n }))
+
     const lines: SearchResults['lines'] = []
-    for (const L of LINES.filter((l) => l.label.toLowerCase().includes(ql))) {
+    for (const L of LINES) {
+      const normCat = normName(L.cat) + normName(L.label.replace(/^[A-Z]+\s/, ''))
+      let score = matchScore(normCat, variants)
+      const numOnly = normName(L.label.replace(/^[A-Z]+\s/, ''))
+      if (numOnly) {
+        const s2 = matchScore(numOnly, variants)
+        if (s2 >= 0 && (score < 0 || s2 + 1 < score)) score = s2 + 1
+      }
+      if (score < 0) continue
       const runs = RUNS.filter((r) => r.lineKey === L.key)
       const mid = runs[0].stops[Math.floor(runs[0].stops.length / 2)].name
-      const last = runs[0].stops[runs[0].stops.length - 1].name
-      lines.push({ key: L.key, label: L.label, cat: L.cat, n: runs.length, ctx: `${mid} ⇢ ${last}` })
+      lines.push({
+        key: L.key, label: L.label, cat: L.cat,
+        ctx: `${mid} ⇢ ${runs[0].stops[runs[0].stops.length - 1].name}`,
+        n: runs.length,
+      })
     }
-    return { stations, lines }
+    lines.sort((a, b) => a.label.localeCompare(b.label))
+    out.lines = lines.slice(0, 6)
+
+    if (time != null) out.time = time
+    if (stations.length > 0) {
+      out.stationName = stations[0].name
+      out.stationLines = linesAtStation(stations[0].name).map((L) => ({
+        key: L.key, label: L.label, cat: L.cat, n: 0, ctx: 'hält hier',
+      }))
+    }
+    return out
   },
 
   async board(station: string, at: number): Promise<BoardData> {
