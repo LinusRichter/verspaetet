@@ -362,14 +362,59 @@ type dataUI struct {
 
 	stationsOnce sync.Once
 	stations     []stationEntry // gesamt, im RAM (≈ 5.400 Zeilen)
+
+	daySF daySingleflight // verhindert parallele computeDay-Scans pro Tag
 }
 
 func newDataUI(pool *pgxpool.Pool) *dataUI {
-	return &dataUI{
+	d := &dataUI{
 		pool:      pool,
 		dayCache:  newTTLCache[dayData](10 * time.Minute),
 		stationLn: newTTLCache[[]uiAltLine](10 * time.Minute),
 	}
+	// Tagesaggregate im Hintergrund vorwärmen, damit die erste Suche nie
+	// den schweren Erstscan bezahlt (und niemand auf ihn wartet).
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		anchor := dayAnchor(time.Now().UTC())
+		d.dayFor(ctx, anchor, anchor.AddDate(0, 0, 1))
+	}()
+	return d
+}
+
+// daySingleflight: parallele Aufrufe für denselben Tag teilen EINE Berechnung
+// (kein Thundering-Herd aus gestaffelten Suchanfragen).
+type daySingleflight struct {
+	mu    sync.Mutex
+	calls map[string]*daySFCall
+}
+
+type daySFCall struct {
+	done chan struct{}
+	val  dayData
+	ok   bool
+}
+
+func (g *daySingleflight) Do(key string, fn func() (dayData, bool)) (dayData, bool) {
+	g.mu.Lock()
+	if g.calls == nil {
+		g.calls = make(map[string]*daySFCall)
+	}
+	if c, exists := g.calls[key]; exists {
+		g.mu.Unlock()
+		<-c.done // auf die laufende Berechnung warten statt selbst zu scannen
+		return c.val, c.ok
+	}
+	c := &daySFCall{done: make(chan struct{})}
+	g.calls[key] = c
+	g.mu.Unlock()
+	c.val, c.ok = fn()
+	close(c.done)
+	g.mu.Lock()
+	delete(g.calls, key)
+	g.mu.Unlock()
+	return c.val, c.ok
 }
 
 func registerDataUI(mux *http.ServeMux, pool *pgxpool.Pool) {
@@ -556,8 +601,9 @@ func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 		out.Stations = append(out.Stations, uiSearchStation{Name: h.e.Name, N: 0})
 	}
 
-	// Linien: aus den Tagesfakten (gecacht) — normalisiert "s6"/"re7"-sicher.
-	if day, ok := d.loadDay(r, false); ok {
+	// Linien: aus den Tagesfakten — NUR aus dem Cache, die Suche stößt nie
+	// eine Tagesberechnung an (Warm-up beim Start füllt den Cache).
+	if day, ok := d.cachedDay(r); ok {
 		type entry struct {
 			cat, label, from, to string
 			n, score             int
@@ -1137,29 +1183,56 @@ func (d *dataUI) handleDay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, day)
 }
 
-// loadDay berechnet (und cacht) die Tagesaggregate.
+// loadDay berechnet (und cacht) die Tagesaggregate — mit Singleflight.
 func (d *dataUI) loadDay(r *http.Request, required bool) (dayData, bool) {
 	start, end, _ := d.dayWindow(r)
 	key := start.Format("2006-01-02")
 	now := time.Now().UTC()
 
-	// Historische Tage sind stabil → Cache ohne TTL dort;
-	// heute bleibt bei der 10-min-TTL des Caches (einfachheitshalber).
 	if !start.Equal(dayAnchor(now)) {
 		if v, ok := d.dayCache.get(key, now); ok {
 			return v, true
 		}
 	}
 
-	day, err := d.computeDay(r.Context(), start, end)
-	if err != nil {
-		if required {
+	v, ok := d.daySF.Do(key, func() (dayData, bool) {
+		day, err := d.computeDay(r.Context(), start, end)
+		if err != nil {
 			log.Printf("[dataui] computeDay %s: %v", key, err)
+			return dayData{}, false
 		}
-		return dayData{}, false
+		d.dayCache.put(key, day, now)
+		return day, true
+	})
+	if !ok && required {
+		log.Printf("[dataui] day %s unavailable", key)
 	}
-	d.dayCache.put(key, day, now)
-	return day, true
+	return v, ok
+}
+
+// cachedDay: nur Cache-Lookup, NIE eine Berechnung anstoßen (für die Suche).
+func (d *dataUI) cachedDay(r *http.Request) (dayData, bool) {
+	start, _, _ := d.dayWindow(r)
+	return d.dayCache.get(start.Format("2006-01-02"), time.Now().UTC())
+}
+
+// dayFor: Berechnung mit eigenem Kontext (Warm-up beim Start).
+func (d *dataUI) dayFor(ctx context.Context, start, end time.Time) (dayData, bool) {
+	key := start.Format("2006-01-02")
+	now := time.Now().UTC()
+	if v, ok := d.dayCache.get(key, now); ok {
+		return v, true
+	}
+	v, ok := d.daySF.Do(key, func() (dayData, bool) {
+		day, err := d.computeDay(ctx, start, end)
+		if err != nil {
+			log.Printf("[dataui] warmup computeDay %s: %v", key, err)
+			return dayData{}, false
+		}
+		d.dayCache.put(key, day, now)
+		return day, true
+	})
+	return v, ok
 }
 
 // computeDay: letzte Snapshots je Halt → pro Fahrt Start und Ende.

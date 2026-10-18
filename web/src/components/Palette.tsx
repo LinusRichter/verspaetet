@@ -25,12 +25,14 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
   const [loading, setLoading] = useState(false)
   const [sel, setSel] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const seqRef = useRef(0)
 
   const run = debounce((query: string) => {
     if (query.trim().length < 2) { setRes(null); setLoading(false); return }
+    const my = ++seqRef.current
     api.search(query.trim())
-      .then((r) => { setRes(r); setLoading(false) })
-      .catch(() => { setRes(null); setLoading(false) })
+      .then((r) => { if (seqRef.current === my) { setRes(r); setLoading(false) } })
+      .catch(() => { if (seqRef.current === my) { setRes(null); setLoading(false) } })
   }, 250)
 
   // Beim Öffnen: zurücksetzen und fokussieren.

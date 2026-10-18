@@ -19,12 +19,15 @@ export function Board(): ReactNode {
   const [err, setErr] = useState<string | null>(null)
   const box = useRef<HTMLDivElement>(null)
 
-  // Stationsvorschläge (debounced, on demand)
+  // Stationsvorschläge (debounced, on demand, ab 2 Zeichen; veraltete
+  // Antworten werden verworfen — Sequenznummer vergleicht)
+  const seqRef = useRef(0)
   const runSearch = debounce((query: string) => {
-    if (query.trim().length < 1) { setSug([]); return }
+    if (query.trim().length < 2) { setSug([]); return }
+    const my = ++seqRef.current
     api.search(query.trim())
-      .then((r) => setSug(r.stations.slice(0, 10)))
-      .catch(() => setSug([]))
+      .then((r) => { if (seqRef.current === my) setSug(r.stations.slice(0, 10)) })
+      .catch(() => { if (seqRef.current === my) setSug([]) })
   }, 200)
 
   useEffect(() => {
