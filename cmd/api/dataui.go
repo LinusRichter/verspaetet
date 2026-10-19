@@ -1260,7 +1260,7 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 		), numbered AS (
 			SELECT *,
 			       regexp_replace(stop_id, '-[0-9]+$', '') AS trip,
-			       split_part(stop_id, '-', 3)::int AS stop_idx
+			       split_part(stop_id, '-', 3)::bigint AS stop_idx
 			FROM day_last
 		), first AS (
 			SELECT DISTINCT ON (trip) trip, cat, label, dep_min, from_name, cancelled
@@ -1284,7 +1284,7 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 		)
 		SELECT f.trip, f.cat, f.label, f.dep_min, f.from_name,
 		       l.to_name, COALESCE(l.delay, 0)::int, (f.cancelled AND l.cancelled)
-		FROM first f JOIN last l USING (trip)`, start)
+		FROM first f JOIN last l USING (trip)`, start, end)
 	if err != nil {
 		return dayData{}, err
 	}
