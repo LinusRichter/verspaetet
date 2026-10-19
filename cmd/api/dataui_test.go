@@ -4,6 +4,7 @@ package main
 // (buildJourney / buildStop / buildBoard / buildLine) — ohne Datenbank.
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -259,23 +260,20 @@ func TestTripKeyAndStopIdx(t *testing.T) {
 	}
 }
 
-func TestJourneyRangeBounds(t *testing.T) {
-	// Die Bereichsgrenzen [run||'-', run||'.') müssen exakt run+'-'+Idx
-	// treffen: '-' (0x2D) < '.' (0x2E) < '0' (0x30).
+func TestJourneyStopIDComposition(t *testing.T) {
+	// Warum KEINE SQL-Bereichssuche: unter en_US.utf8 gilt 'aaa-5' < 'aaa.'
+	// als FALSE (linguistische Collation wiegt Interpunktion anders als das
+	// Byte-Alphabet) — Bereichsgrenzen wählen den falschen Slice. Die
+	// Equality-Lösung ruht auf: stop_id = run || '-' || idx.
 	run := "123-2610170800"
-	lo := run + "-"
-	hi := run + "."
-	in := []string{run + "-1", run + "-12", run + "-" + "999"}
-	out := []string{run + "x", run, "123-26101708001"}
-	for _, s := range in {
-		if !(s >= lo && s < hi) {
-			t.Errorf("%s sollte im Bereich liegen", s)
+	for _, idx := range []int{1, 12, 999} {
+		s2 := run + "-" + fmt.Sprintf("%d", idx)
+		if !strings.HasPrefix(s2, run+"-") || tripKey(s2) != run || stopIdxOf(s2) != idx {
+			t.Errorf("%s: Komposition tripKey/stopIdxOf stimmt nicht", s2)
 		}
 	}
-	for _, s := range out {
-		if s >= lo && s < hi {
-			t.Errorf("%s sollte NICHT im Bereich liegen", s)
-		}
+	if strings.HasPrefix("123-26101708001", run+"-") {
+		t.Error("angefügte Ziffern ohne Bindestrich dürfen nicht als Halt gelten")
 	}
 }
 
