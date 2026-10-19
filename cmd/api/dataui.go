@@ -1250,6 +1250,7 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 			FROM stop_events se
 			JOIN stations st ON st.eva = se.station_eva
 			WHERE se.scraped_at >= $1 AND se.scraped_at < $2
+			  AND se.line_category <> '' -- fchg-Delta-Rows ohne tl ausschließen
 			ORDER BY se.stop_id, se.scraped_at DESC
 		), numbered AS (
 			SELECT *,
@@ -1412,6 +1413,7 @@ func (d *dataUI) altLinesFor(r *http.Request, line uiLineInfo, station string) (
 			WHERE se.station_eva = (SELECT eva FROM stations WHERE name = $1 LIMIT 1)
 			  AND se.scraped_at >= $3 AND se.scraped_at < $4
 			  AND se.direction = 'departure'
+			  AND se.line_category <> '' -- fchg-Delta-Rows ohne tl ausschließen
 			ORDER BY se.line_category, `+labelExpr+`, ABS(EXTRACT(EPOCH FROM (se.planned_time - $2))::int)`, station, anchor, start, end)
 		if err != nil {
 			log.Printf("[dataui] altLines: %v", err)
