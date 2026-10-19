@@ -140,6 +140,11 @@ func stopIdxOf(stopID string) int {
 
 func lineKeyOf(cat, label string) string { return cat + "|" + label }
 func lineLabelOf(cat, label string) string {
+	// IRIS liefert das öffentliche Label teils inklusive Kategorie („S11") —
+	// dann nicht doppeln („S S11"), sondern „S 11".
+	if len(label) > len(cat) && strings.EqualFold(label[:len(cat)], cat) {
+		return cat + " " + label[len(cat):]
+	}
 	return strings.TrimSpace(cat + " " + label)
 }
 
@@ -722,7 +727,7 @@ func (d *dataUI) handleBoard(w http.ResponseWriter, r *http.Request) {
 		  AND se.direction = 'departure'
 		  AND se.planned_time BETWEEN $2 AND $3
 		  AND se.scraped_at <= $4
-		ORDER BY se.stop_id, se.scraped_at DESC`, station, lo, hi, at)
+		ORDER BY se.stop_id, (se.line_category = '') ASC, se.scraped_at DESC`, station, lo, hi, at)
 	if err != nil {
 		writeError(w, 500, "board query: "+err.Error())
 		return
