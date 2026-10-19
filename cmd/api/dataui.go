@@ -808,8 +808,11 @@ func (d *dataUI) handleJourney(w http.ResponseWriter, r *http.Request) {
 	}
 	station := strings.TrimSpace(r.URL.Query().Get("station"))
 
-	// Bereichssuche: [run||'-', run||'.') deckt exakt run+'-'+Ziffern ab
-	// (Byte-Reihenfolge '-' < '.' < '0'..'9').
+	// Gleichheits-Lookups über generate_series: nutzt den vorhandenen
+	// (stop_id, scraped_at)-Index per Index-Seeks. KEINE Bereichssuche
+	// (>= run||'-' AND < run||'.'): die Byte-Reihenfolge '-' < '.' < Ziffern
+	// gilt unter der linguistischen Collation en_US.utf8 NICHT (Interpunktion
+	// wird anders gewichtet) — Bereichsgrenzen wählen den falschen Slice.
 	rows, err := d.pool.Query(r.Context(), `
 		SELECT se.stop_id, se.direction, se.station_eva, st.name,
 		       se.planned_time, se.actual_time, se.cancelled, se.scraped_at,
@@ -818,8 +821,9 @@ func (d *dataUI) handleJourney(w http.ResponseWriter, r *http.Request) {
 		       se.via_path, COALESCE(se.direction_name, '')
 		FROM stop_events se
 		JOIN stations st ON st.eva = se.station_eva
-		WHERE se.stop_id >= $1 || '-'
-		  AND se.stop_id <  $1 || '.'
+		WHERE se.stop_id IN (
+			SELECT $1 || '-' || i FROM generate_series(1, 200) AS i
+		)
 		ORDER BY se.stop_id, se.scraped_at`, run)
 	if err != nil {
 		writeError(w, 500, "journey query: "+err.Error())
