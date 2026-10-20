@@ -69,7 +69,7 @@ export function Board(): ReactNode {
               {sug.map((s) => (
                 <div key={s.name} className="stitem"
                   onClick={() => { setQ(s.name); setSugOpen(false); goStation(s.name) }}>
-                  <span>{s.name}</span><span className="n">{s.n}</span>
+                  <span>{s.name}</span>{s.n > 0 && <span className="n">{s.n}</span>}
                 </div>
               ))}
             </div>
