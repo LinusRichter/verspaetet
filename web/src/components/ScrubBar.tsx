@@ -56,7 +56,7 @@ export function ScrubBar(): React.ReactNode {
         </div>
         <div className="nowmark" style={{ left: `${pos(meta.now)}%` }} title={`jetzt (${fmt(meta.now)})`} />
         <div className="ticks">
-          {ticks.map((m) => <span key={m} style={{ left: `${pos(m)}%` }}>{fmt(m)}</span>)}
+          {ticks.map((m) => <span key={m} style={{ left: `${pos(m)}%` }}>{m === 1440 ? '24:00' : fmt(m)}</span>)}
         </div>
       </div>
       <button className="mini" onClick={() => setScrub(meta.now)}>Jetzt</button>

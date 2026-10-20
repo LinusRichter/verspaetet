@@ -49,7 +49,7 @@ export function Journey(): ReactNode {
         </div>
       )}
       <div className="runhead">
-        <b>{line.label}</b> · {line.evu} · Start {fmt(run.dep)}{' '}
+        <b>{line.label}</b>{line.evu ? <> · {line.evu}</> : null} · Start {fmt(run.dep)}{' '}
         <span className="stname-link" onClick={() => goStation(run.stops[0].name)}>{run.stops[0].name}</span>
         {' → '}
         <span className="stname-link" onClick={() => goStation(run.stops[run.stops.length - 1].name)}>
@@ -69,7 +69,7 @@ export function Journey(): ReactNode {
               <div className="st-time">{fmt(st.planned)}</div>
               <Chip st={sta} />
               <div className="st-plat">
-                Gl. {sta.plat}
+                Gl. {(sta.known ? sta.plat : '') || st.platFrom || '–'}
                 {st.platTo !== st.platFrom && sta.known && sta.plat === st.platTo && <span className="pchg">⇄</span>}
               </div>
               <div className="st-bar">

@@ -5,7 +5,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import type { DayData, LineData } from '../types'
 import { useApp } from '../state'
-import { fmt } from '../lib'
+import { fmt, fmtNum } from '../lib'
 import { delayHex, palette } from '../theme'
 import { Card, Empty, ErrorBox, Loading } from './bits'
 import { SpaghettiChart } from './charts'
@@ -73,10 +73,10 @@ export function LineView(): ReactNode {
         </div>
       )}
       <div className="cards">
-        <Card value={data.stats.n} label="Fahrten" />
+        <Card value={fmtNum(data.stats.n)} label="Fahrten" />
         <Card value={`${data.stats.cx} ✕`} label="Ausfälle" />
-        <Card value={`${data.stats.p50} min`} label="P50 Endversp." />
-        <Card value={`${data.stats.p90} min`} label="P90 Endversp." />
+        <Card value={`+${data.stats.p50} min`} label="P50 Endversp." />
+        <Card value={`+${data.stats.p90} min`} label="P90 Endversp." />
         <Card value={`${data.stats.punc} %`} label="pünktlich (≤5)" />
         <Card value={data.stats.gc} label="Gleiswechsel" />
       </div>

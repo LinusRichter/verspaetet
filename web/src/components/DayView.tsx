@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import type { DayData } from '../types'
 import { useApp } from '../state'
-import { clamp, fmt } from '../lib'
+import { clamp, fmt, fmtNum } from '../lib'
 import { delayHex, palette } from '../theme'
 import { Card, ErrorBox, Loading } from './bits'
 import { HourProfile } from './charts'
@@ -24,24 +24,23 @@ export function DayView(): ReactNode {
   }, [])
 
   if (err) return <ErrorBox msg={err} />
-  if (!data) return <Loading note="Übersicht wird geladen …" />
+  if (!data) return <Loading note="Übersicht wird geladen — Tagesaggregate werden einmalig berechnet, dann 10 min gecacht …" />
 
   return (
     <section>
       <div className="vhead">
         <h2>{meta?.day ?? ''}</h2>
         <span className="muted">
-          {data.kpis.runs} Fahrten · {data.leaderboard.length} Linien · {data.kpis.snaps} Snapshots
+          {fmtNum(data.kpis.runs)} Fahrten · {data.leaderboard.length} Linien · {fmtNum(data.kpis.snaps)} Snapshots
         </span>
       </div>
 
       <div className="cards">
-        <Card value={data.kpis.runs} label="Fahrten" />
+        <Card value={fmtNum(data.kpis.runs)} label="Fahrten" />
         <Card value={`${data.kpis.punc} %`} label="pünktlich (≤5)" />
         <Card value={`+${data.kpis.avg} min`} label="Ø Endverspätung" />
-        <Card value={`${data.kpis.cx} Fahrten`} label="komplett ausgefallen" />
-        <Card value={data.kpis.gc} label="Gleiswechsel" />
-        <Card value={data.kpis.snaps} label="Snapshots gesammelt" />
+        <Card value={`${fmtNum(data.kpis.cx)} Fahrten`} label="komplett ausgefallen" />
+        <Card value={fmtNum(data.kpis.snaps)} label="Snapshots gesammelt" />
       </div>
 
       <div className="panel">

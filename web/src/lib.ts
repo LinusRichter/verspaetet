@@ -66,6 +66,11 @@ export function runStateAt(run: { cancelled: boolean; stops: { name: string; pla
   return 'im Ziel'
 }
 
+/** Tausenderpunkte nach deutscher Art: 42587 → „42.587". */
+export function fmtNum(n: number): string {
+  return n.toLocaleString('de-DE')
+}
+
 export function debounce<A extends unknown[]>(fn: (...a: A) => void, ms: number): (...a: A) => void {
   let t: ReturnType<typeof setTimeout> | undefined
   return (...a: A) => {

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -624,6 +625,9 @@ func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 			e.n++
 		}
 		for _, e := range byKey {
+			if e.label == "" {
+				continue
+			}
 			label := lineLabelOf(e.cat, e.label)
 			normCat := normName(e.cat) + normName(e.label) // "s"+"6" → "s6"
 			score := matchScore(normCat, variants)
@@ -767,14 +771,16 @@ func buildBoard(raw []rawRow, anchor time.Time) uiBoardData {
 		}
 		row.Known = s.Actual != nil || s.Cancelled
 		if s.Actual != nil {
-			delay := minutesOfDay(*s.Actual, anchor) - row.Planned
+			// RUNDEN statt trunkieren: S-Bahn-Verspätungen <60 s würden
+			// sonst allesamt zu +0 kollabieren (P50/P90-Bug).
+			delay := int(s.Actual.Sub(s.Planned).Round(time.Minute) / time.Minute)
 			row.Delay = &delay
 			row.Ist = !s.Scraped.Before(*s.Actual)
 		}
 		row.PlatChanged = row.Plat != "" && row.PlatFrom != "" && row.Plat != row.PlatFrom
 		out.Rows = append(out.Rows, row)
 
-		if !seenLines[row.LineKey] {
+		if !seenLines[row.LineKey] && s.Cat != "" { // tl-lose Rows erzeugen keinen Leer-Chip
 			seenLines[row.LineKey] = true
 			out.Lines = append(out.Lines, uiLineInfo{Key: row.LineKey, Label: row.LineLabel, Cat: s.Cat})
 		}
@@ -981,7 +987,7 @@ func buildStop(stopID string, list []rawRow) uiStop {
 			snap.Plat = s.PlatFrom
 		}
 		if s.Actual != nil {
-			d := int(s.Actual.Sub(s.Planned) / time.Minute)
+			d := int(s.Actual.Sub(s.Planned).Round(time.Minute) / time.Minute)
 			snap.Prog = &d
 			st.FinalD = d
 			st.Cancelled = false
@@ -1001,6 +1007,9 @@ func buildStop(stopID string, list []rawRow) uiStop {
 	// aber eine Ist-Zeit übersteuert immer.
 	st.Cancelled = st.Snaps[len(st.Snaps)-1].Cancelled
 	st.PlatTo = lastPlat
+	if st.PlatTo == "" {
+		st.PlatTo = st.PlatFrom
+	}
 	st.plannedTS = list[0].Planned
 	return st
 }
@@ -1032,7 +1041,8 @@ func (d *dataUI) handleLine(w http.ResponseWriter, r *http.Request) {
 		JOIN stations st ON st.eva = se.station_eva
 		WHERE se.scraped_at >= $1 AND se.scraped_at < $2
 		  AND se.line_category = $3
-		ORDER BY se.stop_id, se.scraped_at DESC`, start, end, cat)
+		  AND right(regexp_replace(se.stop_id, '-[0-9]+$', ''), 10) LIKE $4 -- Fahrtag
+		ORDER BY se.stop_id, (se.line_category = '') ASC, se.scraped_at DESC`, start, end, cat, start.In(berlinLoc).Format("060102")+"%")
 	if err != nil {
 		writeError(w, 500, "line query: "+err.Error())
 		return
@@ -1105,7 +1115,7 @@ func buildLine(raw []rawRow, anchor time.Time, key, cat, label string) uiLineDat
 		}
 		finalD := 0
 		if s.Actual != nil {
-			finalD = int(s.Actual.Sub(s.Planned) / time.Minute)
+			finalD = int(s.Actual.Sub(s.Planned).Round(time.Minute) / time.Minute)
 		}
 		t.stops = append(t.stops, uiLineRunStop{Name: s.Name, FinalD: finalD, Cancelled: s.Cancelled})
 		t.idxs = append(t.idxs, stopIdxOf(s.StopID))
@@ -1247,6 +1257,9 @@ func (d *dataUI) dayFor(ctx context.Context, start, end time.Time) (dayData, boo
 // computeDay: letzte Snapshots je Halt → pro Fahrt Start und Ende.
 func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData, error) {
 	anchor := start
+	// FAHRTAG-Filter: Datumsteil der trip-id muss zum Tag passen — sonst landen
+	// gestrige Mitternachtsrestfahrten im heutigen Aggregat.
+	dayPat := start.In(berlinLoc).Format("060102") + "%"
 
 	rows, err := d.pool.Query(ctx, `
 		WITH day_last AS (
@@ -1260,11 +1273,12 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 			JOIN stations st ON st.eva = se.station_eva
 			WHERE se.scraped_at >= $1 AND se.scraped_at < $2
 			  AND se.line_category <> '' -- fchg-Delta-Rows ohne tl ausschließen
+			  AND right(regexp_replace(se.stop_id, '-[0-9]+$', ''), 10) LIKE $3 -- Fahrtag
 			ORDER BY se.stop_id, se.scraped_at DESC
 		), numbered AS (
 			SELECT *,
 			       regexp_replace(stop_id, '-[0-9]+$', '') AS trip,
-			       split_part(stop_id, '-', 3)::bigint AS stop_idx
+			       regexp_replace(stop_id, '^.*-', '')::bigint AS stop_idx
 			FROM day_last
 		), first AS (
 			SELECT DISTINCT ON (trip) trip, cat, label, dep_min, from_name, cancelled
@@ -1280,7 +1294,7 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 			FROM (
 				SELECT trip, station_name AS to_name,
 				       CASE WHEN actual_time IS NULL THEN NULL
-				            ELSE EXTRACT(EPOCH FROM (actual_time - planned_time))::int / 60 END AS delay,
+				            ELSE ROUND(EXTRACT(EPOCH FROM (actual_time - planned_time)) / 60)::int END AS delay,
 				       cancelled, stop_idx
 				FROM numbered
 			) l
@@ -1288,7 +1302,7 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 		)
 		SELECT f.trip, f.cat, f.label, f.dep_min, f.from_name,
 		       l.to_name, COALESCE(l.delay, 0)::int, (f.cancelled AND l.cancelled)
-		FROM first f JOIN last l USING (trip)`, start, end)
+		FROM first f JOIN last l USING (trip)`, start, end, dayPat)
 	if err != nil {
 		return dayData{}, err
 	}
@@ -1344,7 +1358,7 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 	day.Kpis = uiDayKpis{
 		Runs:  len(day.TripsOfDay),
 		Punc:  puncOf(all),
-		Avg:   avgOf(all),
+		Avg:   round1(avgOf(all)),
 		Cx:    countCx(day.TripsOfDay),
 		Snaps: d.countSnaps(ctx, start, end),
 	}
@@ -1355,11 +1369,14 @@ func (d *dataUI) computeDay(ctx context.Context, start, end time.Time) (dayData,
 	}
 	sort.Ints(hs)
 	for _, h := range hs {
-		day.Hours = append(day.Hours, uiHourBar{H: h, Avg: avgOf(hours[h]), N: len(hours[h])})
+		day.Hours = append(day.Hours, uiHourBar{H: h, Avg: round1(avgOf(hours[h])), N: len(hours[h])})
 	}
 
 	for key, fin := range perLine {
 		e := lineMeta[key]
+		if e.N < 3 { // 1-2-Fahrten-Rauschen (Betriebsnummern-Fallback) verfälscht die Rangliste
+			continue
+		}
 		e.P50, e.P90, e.Max = percentile(fin, 50), percentile(fin, 90), maxInt(fin)
 		e.Punc = puncOf(fin)
 		day.Leaderboard = append(day.Leaderboard, *e)
@@ -1421,9 +1438,10 @@ func (d *dataUI) altLinesFor(r *http.Request, line uiLineInfo, station string) (
 			FROM stop_events se
 			WHERE se.station_eva = (SELECT eva FROM stations WHERE name = $1 LIMIT 1)
 			  AND se.scraped_at >= $3 AND se.scraped_at < $4
+			  AND right(regexp_replace(se.stop_id, '-[0-9]+$', ''), 10) LIKE $5 -- Fahrtag
 			  AND se.direction = 'departure'
 			  AND se.line_category <> '' -- fchg-Delta-Rows ohne tl ausschließen
-			ORDER BY se.line_category, `+labelExpr+`, ABS(EXTRACT(EPOCH FROM (se.planned_time - $2))::int)`, station, anchor, start, end)
+			ORDER BY se.line_category, `+labelExpr+`, ABS(EXTRACT(EPOCH FROM (se.planned_time - $2))::int)`, station, anchor, start, end, start.In(berlinLoc).Format("060102")+"%")
 		if err != nil {
 			log.Printf("[dataui] altLines: %v", err)
 			return []uiAltLine{}, false
@@ -1503,6 +1521,8 @@ func puncOf(arr []int) int {
 	}
 	return 100 * n / len(arr)
 }
+
+func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
 func avgOf(arr []int) float64 {
 	if len(arr) == 0 {

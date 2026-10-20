@@ -118,10 +118,10 @@ export function Board(): ReactNode {
                           <span className="dot" style={{ background: catColor(line?.cat ?? '', p) }} />{line?.label ?? r.lineKey}
                         </span>
                       </td>
-                      <td>{r.dest}</td>
-                      <td className="muted">{r.via}</td>
+                      <td>{r.dest || '–'}</td>
+                      <td className="muted">{r.via || '–'}</td>
                       <td className="t">
-                        {r.plat}
+                        {r.plat || '–'}
                         {r.platChanged && <span className="pchg" title={`Gleiswechsel (war Gl. ${r.platFrom})`}>⇄</span>}
                       </td>
                     </tr>
