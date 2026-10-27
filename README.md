@@ -10,17 +10,6 @@ verspaetet (German for "delayed") collects departure and arrival board data for 
 
 Served by the same API process on `:8080`, React + Vite, no external chart libraries. Open any station or line via the command palette (`Ctrl+/` or `Shift+/`) — station names are fuzzy (diacritics, `S6` = `S 6`, `koeln` = `Köln`), and a time in the query (`porz 14:30`) deep-links the board at that knowledge time.
 
-| View | What it answers |
-|---|---|
-| **Bahnhofstafel** (station board) | "Was my train on time?" — departures as known at time *t*, incl. cancellations and platform changes |
-| **Zuglauf** (trip view) | How one train's delay evolved — one curve per stop, forecasts converge to the actual time; snapshot history = the raw dataset rows |
-| **Linie** (line view) | Does this line always run badly? Spaghetti chart + heatmap of every trip, P50/P90, punctuality, cancellations |
-| **Übersicht** (day overview) | The day in numbers: punctuality, hourly profile, line ranking, top delays |
-
-![Trip view: delay evolution per stop, knowledge slider mid-afternoon](img/dataui-journey.png)
-
-![Line view: every trip of a line along its route — heatmap and worst-run ranking](img/dataui-line.png)
-
 ![Station board Frankfurt (Main) Hbf](img/dataui-board.png)
 
 ## Ops monitoring
