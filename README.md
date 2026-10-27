@@ -10,7 +10,7 @@ verspaetet (German for "delayed") collects departure and arrival board data for 
 
 ## Ops monitoring
 
-Collection is watched by a self-hosted Grafana stack (VictoriaMetrics single-node) — the dashboard JSON ships in this repo ([monitoring/](monitoring/)). The same server also exposes Prometheus metrics at `/metrics`.
+Collection is watched by a self-hosted Grafana stack:
 
 ![Grafana ops dashboard](img/grafana-ops.png)
 
