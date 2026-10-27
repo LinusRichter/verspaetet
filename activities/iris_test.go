@@ -353,3 +353,22 @@ func TestPlanBaselineFull(t *testing.T) {
 		t.Errorf("DeparturePDE = %q, want empty", s8.DeparturePDE)
 	}
 }
+
+// TestIrisClientHTTP1Pinned: the IRIS client must stay on HTTP/1.1 — the DB
+// gateway resets HTTP/2 streams (INTERNAL_ERROR, ~600/day since 2026-10-20).
+// Guards all three pinning layers against accidental re-enable.
+func TestIrisClientHTTP1Pinned(t *testing.T) {
+	tr, ok := irisHTTP.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport ist kein *http.Transport: %T", irisHTTP.Transport)
+	}
+	if tr.ForceAttemptHTTP2 {
+		t.Error("ForceAttemptHTTP2 darf nicht gesetzt sein")
+	}
+	if len(tr.TLSNextProto) != 0 {
+		t.Errorf("TLSNextProto muss leer sein (h2-Upgrade-Hook), hat %d Einträge", len(tr.TLSNextProto))
+	}
+	if tr.TLSClientConfig == nil || len(tr.TLSClientConfig.NextProtos) != 1 || tr.TLSClientConfig.NextProtos[0] != "http/1.1" {
+		t.Errorf("ALPN muss exakt [http/1.1] anbieten, hat: %v", tr.TLSClientConfig)
+	}
+}

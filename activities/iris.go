@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -120,7 +121,22 @@ func irisBaseURL() string {
 }
 
 // irisHTTP is the shared client (connection reuse, sane timeout).
-var irisHTTP = &http.Client{Timeout: 30 * time.Second}
+// Pinned to HTTP/1.1: the DB API gateway has been resetting HTTP/2 streams
+// since 2026-10-20 (~600/day, "INTERNAL_ERROR; received from peer") — all
+// transient, but ~0.2% of requests. HTTP/1.1 has no stream multiplexing,
+// so that whole error class cannot occur.
+var irisHTTP = func() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ForceAttemptHTTP2 = false
+	// Belt and braces: clear the h2 upgrade hook AND offer only http/1.1
+	// via ALPN, so no code path can re-enable HTTP/2 by accident.
+	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	if t.TLSClientConfig == nil {
+		t.TLSClientConfig = &tls.Config{}
+	}
+	t.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	return &http.Client{Timeout: 30 * time.Second, Transport: t}
+}()
 
 // irisLimiter gates every outbound IRIS request: 1 token = 1 request.
 // IRIS_RATE_LIMIT env (requests/minute); unset = unlimited (testing only!).
@@ -261,7 +277,7 @@ func planBaseline(tt *Timetable) []shared.PlanBaselineRow {
 			if s.DP.PT != "" {
 				if t, err := parseIrisTime(s.DP.PT); err == nil {
 					row.DeparturePT = &t
-			}
+				}
 			}
 			if s.DP.PP != "" {
 				v := s.DP.PP
