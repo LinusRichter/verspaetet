@@ -21,6 +21,8 @@ Served by the same API process on `:8080`, React + Vite, no external chart libra
 
 ![Trip view: delay evolution per stop, knowledge slider mid-afternoon](img/dataui-journey.png)
 
+![Line view: every trip of a line along its route — heatmap and worst-run ranking](img/dataui-line.png)
+
 ![Station board Frankfurt (Main) Hbf](img/dataui-board.png)
 
 ## Ops monitoring

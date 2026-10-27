@@ -121,7 +121,7 @@ svg text { font-family: inherit; }
 .stitem .n { color: var(--muted); font-size: 11px; }
 
 /* ---------- Zuglauf ---------- */
-.stops { display: flex; gap: 5px; margin-bottom: 14px; overflow-x: auto; padding-bottom: 6px; }
+.stops { display: flex; gap: 5px; margin-bottom: 14px; overflow-x: scroll; overflow-y: hidden; padding-bottom: 6px; } /* Scrollbar IMMER da: sonst hüpfen die Kacheln hoch, wenn wachsender Inhalt (Entfall-Batch) die Strip-Scrollbar einblendet */
 .stop { flex: 0 0 auto; width: 104px; border: 1px solid var(--border); background: var(--bg2); padding: 7px 6px; cursor: pointer; text-align: center; }
 .stop:hover { background: var(--bg3); }
 .stop.sel { border-color: var(--accent); }
