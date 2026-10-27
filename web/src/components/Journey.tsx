@@ -67,7 +67,7 @@ export function Journey(): ReactNode {
               <div className="st-name" title={st.name}
                 onClick={(e) => { e.stopPropagation(); goStation(st.name) }}>{st.name}</div>
               <div className="st-time">{fmt(st.planned)}</div>
-              <Chip st={sta} />
+              <Chip st={sta} compact />
               <div className="st-plat">
                 Gl. {(sta.known ? sta.plat : '') || st.platFrom || '–'}
                 {st.platTo !== st.platFrom && sta.known && sta.plat === st.platTo && <span className="pchg">⇄</span>}

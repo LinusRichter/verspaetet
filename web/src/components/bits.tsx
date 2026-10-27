@@ -34,10 +34,16 @@ export function Card({ value, label }: { value: ReactNode; label: string }): Rea
   )
 }
 
-/** Verspätungs-Chip: farbcodiert, Titel erklärt Ist/Prognose. */
-export function Chip({ st }: { st: StopState }): ReactNode {
+/** Verspätungs-Chip: farbcodiert, Titel erklärt Ist/Prognose.
+ * compact (Halte-Kacheln): Entfall als schmales „✕“ mit gleichem Platzbedarf
+ * wie „+0“ — der volle „✕ entfällt“-Text (81 px) würde beim Erscheinen die
+ * Kachel um 2 px höher machen und alles verschieben. */
+export function Chip({ st, compact }: { st: StopState; compact?: boolean }): ReactNode {
   if (!st.known) return <span className="chip unknown" title="noch keine Prognose">–</span>
-  if (st.cancelled) return <span className="chip cx" title="Halt entfällt">✕ entfällt</span>
+  if (st.cancelled) {
+    if (compact) return <span className="chip cx" title="Halt entfällt">✕</span>
+    return <span className="chip cx" title="Halt entfällt">✕ entfällt</span>
+  }
   if (st.delay == null) return <span className="chip unknown">–</span>
   const lbl = st.delay < 0 ? `\u2212${Math.abs(st.delay)}` : `+${st.delay}`
   const ttl = `${st.ist ? 'Ist' : 'Prognose'}: ${lbl} min`
