@@ -6,10 +6,6 @@ verspaetet (German for "delayed") collects departure and arrival board data for 
 
 ![Knowledge-scrubber: move through time and watch the delay evolution of a train](img/dataui-scrubber.gif)
 
-## The data UI
-
-Served by the same API process on `:8080`, React + Vite, no external chart libraries. Open any station or line via the command palette (`Ctrl+/` or `Shift+/`) — station names are fuzzy (diacritics, `S6` = `S 6`, `koeln` = `Köln`), and a time in the query (`porz 14:30`) deep-links the board at that knowledge time.
-
 ![Station board Frankfurt (Main) Hbf](img/dataui-board.png)
 
 ## Ops monitoring
