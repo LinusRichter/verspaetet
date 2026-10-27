@@ -27,7 +27,7 @@ Monthly Parquet chunks of delay-evolution snapshots for all German IRIS stations
 
 > **Note:** This is a POC built entirely with agentic code. The quality is rough.
 >
-> **Rate limits:** Building a gapless dataset (all ~5,400 stations at a consistent, fine-grained cadence) requires a rate limit beyond the free tier (60 req/min for IRIS). Such an increase must be requested from the API provider (developers.deutschebahn.com / IRIS-TTS.API@deutschebahn.com).
+> **Rate limits:** Building this dataset (all ~5,400 stations at a consistent cadence) requires a rate limit beyond the free tier (60 req/min for IRIS). Such an increase must be requested from the API provider (developers.deutschebahn.com / IRIS-TTS.API@deutschebahn.com).
 
 ## Setup
 
@@ -46,7 +46,7 @@ docker compose up -d
 
 UIs:
 - Data UI: `http://localhost:8080`
-- Ops dashboard (Grafana): `http://localhost:8082` (see [monitoring/](monitoring/))
+- Ops dashboard: `http://localhost:8082`
 
 ## Architecture
 
@@ -61,8 +61,6 @@ scheduler ──minute tick──▶ asynq (Redis) ──▶ worker ──▶ IR
                                                   │
                                                   └─▶ API (:8080) ──▶ Data UI (web/dist)
 ```
-
-Plain asynq tasks only — no workflow engine. The IRIS client is pinned to HTTP/1.1 (the API gateway resets HTTP/2 streams sporadically; see `activities/iris.go`). Fetches are staggered per station (`fetch_offset = hash(slug) % CADENCE_MINUTES`), both directions arrive in one document per request, and asynq retries absorb transient upstream errors — measured collection gaps below the 40-minute cadence heal completely (the ~4 h fchg window re-delivers everything a late scrape missed).
 
 ## Data model
 
