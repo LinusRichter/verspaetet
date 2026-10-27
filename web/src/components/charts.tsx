@@ -68,7 +68,7 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
 
 /** Linie: Spaghetti — X = Haltposition, Y = Endverspätung, 1 Linie = 1 Fahrt. */
 export function SpaghettiChart({ runs, p }: { runs: LineRun[]; p: Palette }): ReactNode {
-  const W = 1000, H = 250, ML = 38, MR = 14, MT = 12, MB = 52
+  const W = 1000, H = 292, ML = 38, MR = 14, MT = 12, MB = 92 // MB: Platz für gedrehte Stationsnamen (rot −38°, bis ~50 px unter die Basislinie)
   const live = runs.filter((r) => !r.cancelled)
   const n = runs[0]?.stops.length ?? 1
   const maxD = Math.max(15, ...live.map((r) => r.finalD)) + 3
