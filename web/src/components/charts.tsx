@@ -17,10 +17,13 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
   // kommuniziert wurde. 0 = Planzeit-Referenz.
   const progs = run.stops.flatMap((s) => s.snaps.filter((x) => x.prog != null).map((x) => x.prog as number))
   const maxD = Math.max(15, ...run.stops.map((s) => s.finalD)) + 3
-  const minD = Math.min(0, ...(progs.length ? progs : [0])) - 0 // 0 immer sichtbar
+  // minD aufs Raster quantisieren, sonst liegen Gridlines auf krummen
+  // Positionen und %dStep-Labels treffen nie einen Wert (−11 % 20 ≠ 0).
+  const dStep = maxD - Math.min(0, ...(progs.length ? progs : [0])) > 30 ? 10 : 5
+  const rawMin = Math.min(0, ...(progs.length ? progs : [0]))
+  const minD = Math.floor(rawMin / dStep) * dStep
   const x = (t: number) => ML + ((t - meta.t0) / (meta.t1 - meta.t0)) * (W - ML - MR)
   const y = (d: number) => H - MB - ((d - minD) / (maxD - minD)) * (H - MT - MB)
-  const dStep = maxD - minD > 30 ? 10 : 5
   const span = meta.t1 - meta.t0
   const stepMin = span > 900 ? 120 : 60
   const ticks: number[] = []
