@@ -12,6 +12,14 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
   onScrub: (t: number) => void; p: Palette
 }): ReactNode {
   const W = 1000, H = 230, ML = 38, MR = 14, MT = 12, MB = 26
+  // X-Skala an den FAHRT-Daten statt am Tagesfenster: erster Snapshot bis
+  // letzter Ist/Prognose + Rand, aufs 30-min-Raster quantisiert. Ein ICE mit
+  // 7,6 h Snapshots nutzt sonst nur ~40 % der Breite, kurze Fahrten <20 %.
+  const xsAll: number[] = []
+  for (const s of run.stops) { xsAll.push(s.planned, s.actual); for (const sn of s.snaps) xsAll.push(sn.at) }
+  const hasData = xsAll.length > 0
+  const xT0 = hasData ? Math.floor((Math.min(...xsAll) - 20) / 30) * 30 : meta.t0
+  const xT1 = hasData ? Math.ceil((Math.max(...xsAll) + 20) / 30) * 30 : meta.t1
   // Y-Skala aus den DATEN: negative Prognosen (kommunizierte Früher-Zeiten)
   // gehören in die Ansicht — die Achse reicht dynamisch so weit runter, wie
   // kommuniziert wurde. 0 = Planzeit-Referenz.
@@ -22,17 +30,17 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
   const dStep = maxD - Math.min(0, ...(progs.length ? progs : [0])) > 30 ? 10 : 5
   const rawMin = Math.min(0, ...(progs.length ? progs : [0]))
   const minD = Math.floor(rawMin / dStep) * dStep
-  const x = (t: number) => ML + ((t - meta.t0) / (meta.t1 - meta.t0)) * (W - ML - MR)
+  const x = (t: number) => ML + ((t - xT0) / (xT1 - xT0)) * (W - ML - MR)
   const y = (d: number) => H - MB - ((d - minD) / (maxD - minD)) * (H - MT - MB)
-  const span = meta.t1 - meta.t0
-  const stepMin = span > 900 ? 120 : 60
+  const span = xT1 - xT0
+  const stepMin = span > 600 ? 120 : span > 240 ? 60 : 30
   const ticks: number[] = []
-  for (let m = Math.ceil(meta.t0 / stepMin) * stepMin; m <= meta.t1; m += stepMin) ticks.push(m)
+  for (let m = Math.ceil(xT0 / stepMin) * stepMin; m <= xT1; m += stepMin) ticks.push(m)
 
   const click = (e: React.MouseEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
     const xIn = ((e.clientX - r.left) / r.width) * W
-    onScrub(Math.round((meta.t0 + Math.max(0, Math.min(1, (xIn - ML) / (W - ML - MR))) * span) / 5) * 5)
+    onScrub(Math.round((xT0 + Math.max(0, Math.min(1, (xIn - ML) / (W - ML - MR))) * span) / 5) * 5)
   }
 
   return (
@@ -50,8 +58,10 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
           <text x={x(m)} y={H - MB + 16} textAnchor="middle" fontSize={10} fill={p.label}>{fmt(m)}</text>
         </g>
       ))}
-      <line x1={x(meta.now)} y1={MT} x2={x(meta.now)} y2={H - MB} stroke={p.now} strokeDasharray="4 3" opacity={0.65} />
-      <text x={x(meta.now) + 4} y={MT + 10} fontSize={10} fill={p.now}>jetzt</text>
+      {meta.now >= xT0 && meta.now <= xT1 && (<>
+        <line x1={x(meta.now)} y1={MT} x2={x(meta.now)} y2={H - MB} stroke={p.now} strokeDasharray="4 3" opacity={0.65} />
+        <text x={x(meta.now) + 4} y={MT + 10} fontSize={10} fill={p.now}>jetzt</text>
+      </>)}
       {run.stops.map((st, i) => {
         const pts = st.snaps.filter((sn) => sn.prog != null).map((sn) => `${x(sn.at).toFixed(1)},${y(sn.prog!).toFixed(1)}`)
         const last = st.snaps[st.snaps.length - 1]
@@ -69,7 +79,8 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
           </g>
         )
       })}
-      <line x1={x(scrub)} y1={MT} x2={x(scrub)} y2={H - MB} stroke={p.polySel} strokeWidth={2} />
+      {scrub >= xT0 && scrub <= xT1 && (
+        <line x1={x(scrub)} y1={MT} x2={x(scrub)} y2={H - MB} stroke={p.polySel} strokeWidth={2} />)}
     </svg>
   )
 }
