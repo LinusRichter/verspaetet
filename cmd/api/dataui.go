@@ -814,8 +814,7 @@ func (d *dataUI) handleBoard(w http.ResponseWriter, r *http.Request) {
 			SELECT se2.direction_name, se2.via_path
 			FROM stop_events se2
 			WHERE se2.station_eva = se.station_eva
-			  AND se2.direction = se.direction
-			  AND se2.stop_id = se.stop_id
+			  AND se2.stop_id = se.stop_id -- Richtung ignorieren: Route (ppth/cpth) sitzt oft nur auf der Ankunfts-Row
 			  AND se2.scraped_at <= $4
 			  AND (se2.direction_name IS NOT NULL OR cardinality(se2.via_path) > 0)
 			ORDER BY se2.scraped_at DESC
