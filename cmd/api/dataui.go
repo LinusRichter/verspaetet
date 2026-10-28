@@ -816,8 +816,8 @@ func (d *dataUI) handleBoard(w http.ResponseWriter, r *http.Request) {
 			WHERE se2.station_eva = se.station_eva
 			  AND se2.stop_id = se.stop_id -- Richtung ignorieren: Route (ppth/cpth) sitzt oft nur auf der Ankunfts-Row
 			  AND se2.scraped_at <= $4
-			  AND (se2.direction_name IS NOT NULL OR cardinality(se2.via_path) > 0)
-			ORDER BY se2.scraped_at DESC
+			  AND (NULLIF(se2.direction_name, '') IS NOT NULL OR cardinality(se2.via_path) > 0)
+			ORDER BY cardinality(se2.via_path) DESC, se2.scraped_at DESC -- route-tragende Rows bevorzugen
 			LIMIT 1
 		) rv ON true
 		WHERE se.station_eva = (SELECT eva FROM stations WHERE name = $1 LIMIT 1)
