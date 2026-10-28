@@ -12,10 +12,15 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
   onScrub: (t: number) => void; p: Palette
 }): ReactNode {
   const W = 1000, H = 230, ML = 38, MR = 14, MT = 12, MB = 26
+  // Y-Skala aus den DATEN: negative Prognosen (kommunizierte Früher-Zeiten)
+  // gehören in die Ansicht — die Achse reicht dynamisch so weit runter, wie
+  // kommuniziert wurde. 0 = Planzeit-Referenz.
+  const progs = run.stops.flatMap((s) => s.snaps.filter((x) => x.prog != null).map((x) => x.prog as number))
   const maxD = Math.max(15, ...run.stops.map((s) => s.finalD)) + 3
+  const minD = Math.min(0, ...(progs.length ? progs : [0])) - 0 // 0 immer sichtbar
   const x = (t: number) => ML + ((t - meta.t0) / (meta.t1 - meta.t0)) * (W - ML - MR)
-  const y = (d: number) => H - MB - (d / maxD) * (H - MT - MB)
-  const dStep = maxD > 30 ? 10 : 5
+  const y = (d: number) => H - MB - ((d - minD) / (maxD - minD)) * (H - MT - MB)
+  const dStep = maxD - minD > 30 ? 10 : 5
   const span = meta.t1 - meta.t0
   const stepMin = span > 900 ? 120 : 60
   const ticks: number[] = []
@@ -30,9 +35,9 @@ export function EvolutionChart({ run, selIdx, meta, scrub, onScrub, p }: {
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} onClick={click}>
       <text x={ML - 6} y={MT + 8} textAnchor="end" fontSize={10} fill={p.label}>min</text>
-      {Array.from({ length: Math.floor(maxD / dStep) + 1 }, (_, i) => i * dStep).map((d) => (
+      {Array.from({ length: Math.floor((maxD - minD) / dStep) + 1 }, (_, i) => minD + i * dStep).map((d) => (
         <g key={d}>
-          <line x1={ML} y1={y(d)} x2={W - MR} y2={y(d)} stroke={p.grid} />
+          <line x1={ML} y1={y(d)} x2={W - MR} y2={y(d)} stroke={d === 0 ? p.axis : p.grid} strokeWidth={d === 0 ? 1.5 : 1} />
           {d % (dStep * 2) === 0 && <text x={ML - 6} y={y(d) + 3} textAnchor="end" fontSize={10} fill={p.label}>{d}</text>}
         </g>
       ))}
