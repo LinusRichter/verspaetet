@@ -596,7 +596,7 @@ func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Tagesfakten für Linien-Matching (nur Cache, nie Berechnung).
 	type lineEntry struct {
 		cat, label, from, to string
-		n                    int
+		n, bestScore         int
 	}
 	linesOfDay := map[string]*lineEntry{}
 	if day, ok := d.cachedDay(r); ok {
@@ -642,6 +642,9 @@ func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if score >= 0 {
+				if score < e.bestScore || e.bestScore == 0 {
+					e.bestScore = score
+				}
 				tm.lines = append(tm.lines, e)
 			}
 		}
@@ -663,18 +666,32 @@ func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Linien: Union über alle Tokens.
+	// Linien: Union über alle Tokens, nach Relevanz sortiert (exakt > Präfix > enthält)
+	// — „horrem s12" soll S 12 (exakt) VOR SWE RS12 (enthält) zeigen.
 	seenLi := map[string]bool{}
+	var lineUnion []*lineEntry
 	for _, tm := range tms {
 		for _, le := range tm.lines {
-			if !seenLi[lineKeyOf(le.cat, le.label)] && len(out.Lines) < 6 {
+			if !seenLi[lineKeyOf(le.cat, le.label)] {
 				seenLi[lineKeyOf(le.cat, le.label)] = true
-				out.Lines = append(out.Lines, uiSearchLine{
-					Key: lineKeyOf(le.cat, le.label), Label: lineLabelOf(le.cat, le.label),
-					Cat: le.cat, Ctx: le.from + " ⇢ " + le.to, N: le.n,
-				})
+				lineUnion = append(lineUnion, le)
 			}
 		}
+	}
+	sort.SliceStable(lineUnion, func(i, j int) bool {
+		if lineUnion[i].bestScore != lineUnion[j].bestScore {
+			return lineUnion[i].bestScore < lineUnion[j].bestScore
+		}
+		return lineUnion[i].n > lineUnion[j].n
+	})
+	for _, le := range lineUnion {
+		if len(out.Lines) >= 6 {
+			break
+		}
+		out.Lines = append(out.Lines, uiSearchLine{
+			Key: lineKeyOf(le.cat, le.label), Label: lineLabelOf(le.cat, le.label),
+			Cat: le.cat, Ctx: le.from + " ⇢ " + le.to, N: le.n,
+		})
 	}
 
 	// Kombiniert: Station-Token + Linien-Token → „Linie an Bahnhof".
@@ -686,23 +703,31 @@ func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if firstStation != nil {
+		// Nur Linien-Token (Token ohne Stations-Treffer) kombinieren;
+		// Reihenfolge = Relevanz aus lineUnion.
+		lineOnly := map[string]bool{}
 		for _, tm := range tms {
-			if len(tm.stations) > 0 {
-				continue // Station-Token nicht mit sich selbst kombinieren
-			}
-			for _, le := range tm.lines {
-				if len(out.LineAtStation) >= 3 {
-					break
+			if len(tm.stations) == 0 {
+				for _, le := range tm.lines {
+					lineOnly[lineKeyOf(le.cat, le.label)] = true
 				}
-				out.LineAtStation = append(out.LineAtStation, uiLineAtStation{
-					Line: uiLineInfo{
-						Key:   lineKeyOf(le.cat, le.label),
-						Label: lineLabelOf(le.cat, le.label),
-						Cat:   le.cat,
-					},
-					Station: firstStation.Name,
-				})
 			}
+		}
+		for _, le := range lineUnion {
+			if len(out.LineAtStation) >= 3 {
+				break
+			}
+			if !lineOnly[lineKeyOf(le.cat, le.label)] {
+				continue
+			}
+			out.LineAtStation = append(out.LineAtStation, uiLineAtStation{
+				Line: uiLineInfo{
+					Key:   lineKeyOf(le.cat, le.label),
+					Label: lineLabelOf(le.cat, le.label),
+					Cat:   le.cat,
+				},
+				Station: firstStation.Name,
+			})
 		}
 	}
 
@@ -774,15 +799,28 @@ func (d *dataUI) handleBoard(w http.ResponseWriter, r *http.Request) {
 
 	// Abfahrten im Planfenster; pro Halt der letzte Stand ≤ Wissensstand.
 	// Nutzt idx (station_eva, direction, planned_time) + Dedup-Sort über die
-	// wenigen Fensterevents.
+	// wenigen Fensterevents. Richtung/Route per LATERAL aus dem besten
+	// route-tragenden Snapshot desselben Halts (tl-lose Delta-Rows liefern
+	// oft leeres via_path, während frühere Snapshots die volle Route kennen).
 	rows, err := d.pool.Query(r.Context(), `
 		SELECT DISTINCT ON (se.stop_id)
 		       se.stop_id, st.name, se.line_category, `+labelExpr+`,
-		       COALESCE(se.direction_name, ''), se.via_path,
+		       COALESCE(rv.direction_name, '') AS direction_name, rv.via_path,
 		       se.planned_time, se.actual_time, se.cancelled, se.scraped_at,
 		       COALESCE(se.platform, ''), COALESCE(se.planned_platform, '')
 		FROM stop_events se
 		JOIN stations st ON st.eva = se.station_eva
+		LEFT JOIN LATERAL (
+			SELECT se2.direction_name, se2.via_path
+			FROM stop_events se2
+			WHERE se2.station_eva = se.station_eva
+			  AND se2.direction = se.direction
+			  AND se2.stop_id = se.stop_id
+			  AND se2.scraped_at <= $4
+			  AND (se2.direction_name IS NOT NULL OR cardinality(se2.via_path) > 0)
+			ORDER BY se2.scraped_at DESC
+			LIMIT 1
+		) rv ON true
 		WHERE se.station_eva = (SELECT eva FROM stations WHERE name = $1 LIMIT 1)
 		  AND se.direction = 'departure'
 		  AND se.planned_time BETWEEN $2 AND $3
