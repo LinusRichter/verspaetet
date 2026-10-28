@@ -41,11 +41,11 @@ export function Board(): ReactNode {
     if (!nav.station) { setData(null); return }
     let alive = true
     const key = ++loadKeyCounter
-    api.board(nav.station, scrub)
+    api.board(nav.station, scrub, nav.day)
       .then((d) => { if (alive && loadKeyCounter === key) { setData(d); setErr(null) } })
       .catch((e) => { if (alive && loadKeyCounter === key) setErr(String(e)) })
     return () => { alive = false }
-  }, [nav.station, scrub])
+  }, [nav.station, scrub, nav.day])
 
   const loading = data == null && !err && !!nav.station
 

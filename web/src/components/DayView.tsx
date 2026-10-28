@@ -10,18 +10,18 @@ import { Card, ErrorBox, Loading } from './bits'
 import { HourProfile } from './charts'
 
 export function DayView(): ReactNode {
-  const { meta, goLine, goRun, theme } = useApp()
+  const { meta, nav, goLine, goRun, theme } = useApp()
   const p = palette(theme)
   const [data, setData] = useState<DayData | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
-    api.day()
+    api.day(nav.day)
       .then((d) => { if (alive) { setData(d); setErr(null) } })
       .catch((e) => { if (alive) setErr(String(e)) })
     return () => { alive = false }
-  }, [])
+  }, [nav.day])
 
   if (err) return <ErrorBox msg={err} />
   if (!data) return <Loading note="Übersicht wird geladen — Tagesaggregate werden einmalig berechnet, dann 10 min gecacht …" />

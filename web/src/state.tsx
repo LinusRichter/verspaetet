@@ -1,12 +1,12 @@
-// Zentraler Zustand: Navigation (Tab + Bahnhof/Linie/Fahrt), Wissensstand
-// (Scrub) und Theme. Die Navigation läuft ÜBER die Browser-Historie:
-// jede Ansichts-Navigation ist ein history-Eintrag (Zurück/Vor arbeiten),
-// Kontext-Switches innerhalb einer Ansicht ersetzen nur den aktuellen
-// Eintrag. Der Zustand liegt zusätzlich in der URL (Deep-Links/Teilen).
+// Zentraler Zustand: Navigation (Tab + Bahnhof/Linie/Fahrt + Tag +
+// Richtungsfilter), Browser-Historie (Zurück/Vor), Wissensstand (Scrub)
+// und Theme. Alles on-demand — nichts wird vorab geladen außer /api/meta.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Meta, Tab } from './types'
 import { api } from './api'
+
+export type LineDir = 'all' | 'in' | 'out'
 
 export interface NavState {
   tab: Tab
@@ -16,6 +16,8 @@ export interface NavState {
   runDep: number | null
   stopIdx: number
   scrub: number
+  day: string | null       // ISO-Datum (YYYY-MM-DD); null = heute
+  lineDir: LineDir         // Richtungsfilter im Line-View (nur mit Stations-Scope)
 }
 
 type NavOnly = Omit<NavState, 'scrub'>
@@ -29,11 +31,13 @@ interface Ctx {
   toggleTheme: () => void
   nav: NavOnly
   goStation: (station: string) => void
-  goLine: (lineKey: string) => void
+  goLine: (lineKey: string, station?: string | null) => void
   goRun: (runId: string, stopIdx?: number, dep?: number) => void
   setTab: (tab: Tab) => void
+  setDay: (day: string | null) => void
   selectLine: (lineKey: string) => void   // Kontext-Switch ohne History-Eintrag
   selectRun: (runId: string, stopIdx?: number, dep?: number) => void
+  selectLineDir: (dir: LineDir) => void
   canGoBack: boolean
   back: () => void
 }
@@ -59,6 +63,8 @@ function urlFor(nav: NavOnly, scrub: number): string {
   if (nav.stopIdx) p.set('stop', String(nav.stopIdx))
   if (nav.runDep != null) p.set('dep', String(nav.runDep))
   if (scrub) p.set('at', String(scrub))
+  if (nav.day) p.set('day', nav.day)
+  if (nav.lineDir !== 'all') p.set('dir', nav.lineDir)
   const qs = p.toString()
   return qs ? `/?${qs}` : '/'
 }
@@ -68,6 +74,7 @@ function navFromLocation(): { nav: NavOnly; scrub: number | null } {
   const tab = (['board', 'journey', 'line', 'day'] as const).includes(p.get('tab') as Tab)
     ? (p.get('tab') as Tab) : 'board'
   const at = p.get('at')
+  const dir = p.get('dir')
   return {
     nav: {
       tab,
@@ -76,6 +83,8 @@ function navFromLocation(): { nav: NavOnly; scrub: number | null } {
       run: p.get('run'),
       runDep: p.get('dep') != null ? Number(p.get('dep')) : null,
       stopIdx: p.get('stop') != null ? Number(p.get('stop')) || 0 : 0,
+      day: p.get('day') && /^\d{4}-\d{2}-\d{2}$/.test(p.get('day')!) ? p.get('day') : null,
+      lineDir: dir === 'in' || dir === 'out' ? dir : 'all',
     },
     scrub: at != null ? Number(at) : null,
   }
@@ -103,17 +112,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   navRef.current = nav
   const scrubRef = useRef(scrub)
   scrubRef.current = scrub
+  const dayRef = useRef(nav.day)
+  dayRef.current = nav.day
 
-  // Beim Start: nur Metainfos (Zeitrahmen des Tages). Kein weiterer Load.
+  // Meta pro TAG laden (heute = Default). Historische Tage: now = Tagesende.
+  // Scrub springt beim Tageswechsel auf den Tages-„jetzt"-Stand — außer der
+  // Deep-Link hatte einen expliziten Wissensstand (?at=).
+  const scrubDaySet = useRef<string | null | undefined>(undefined)
   useEffect(() => {
     let alive = true
-    api.meta().then((m) => {
+    const day = nav.day
+    api.meta(day).then((m) => {
       if (!alive) return
       setMeta(m)
-      if (init.current.scrub == null) setScrubRaw(m.now)
-    }).catch((e) => setMetaError(String(e)))
+      setMetaError(null)
+      const key = day ?? 'today'
+      if (init.current.scrub == null && scrubDaySet.current !== key) {
+        scrubDaySet.current = key
+        setScrubRaw(m.now)
+      }
+    }).catch((e) => { if (alive) setMetaError(String(e)) })
     return () => { alive = false }
-  }, [])
+  }, [nav.day])
 
   const toggleTheme = useCallback(() => {
     setTheme((th) => {
@@ -146,13 +166,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setScrubRaw(t)
     clearTimeout(replaceScrubSoon.current)
     replaceScrubSoon.current = setTimeout(() => {
-      const s: NavState = { ...navRef.current, scrub: scrubRef.current }
-      window.history.replaceState(s, '', urlFor(navRef.current, scrubRef.current))
+      window.history.replaceState(
+        { ...navRef.current, scrub: scrubRef.current }, '',
+        urlFor(navRef.current, scrubRef.current))
     }, 400)
   }, [])
 
-  // Browser Zurück/Vor: Zustand aus dem History-Eintrag wiederherstellen
-  // (ohne selbst zu pushen).
   useEffect(() => {
     const h = (e: PopStateEvent) => {
       if (validState(e.state)) {
@@ -163,7 +182,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setHistLen(window.history.length)
     }
     window.addEventListener('popstate', h)
-    // Initialen Eintrag mit Zustand versehen (Reload/Deep-Link).
     window.history.replaceState(
       { ...init.current.nav, scrub: init.current.scrub ?? 0 }, '',
       urlFor(init.current.nav, init.current.scrub ?? 0))
@@ -176,8 +194,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pushNav({ ...navRef.current, tab: 'board', station })
   }, [pushNav])
 
-  const goLine = useCallback((lineKey: string) => {
-    pushNav({ ...navRef.current, tab: 'line', line: lineKey })
+  const goLine = useCallback((lineKey: string, station?: string | null) => {
+    pushNav({ ...navRef.current, tab: 'line', line: lineKey, station: station !== undefined ? station : navRef.current.station, run: null, runDep: null })
   }, [pushNav])
 
   const goRun = useCallback((runId: string, stopIdx = 0, dep?: number) => {
@@ -188,6 +206,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pushNav({ ...navRef.current, tab })
   }, [pushNav])
 
+  const setDay = useCallback((day: string | null) => {
+    pushNav({ ...navRef.current, day, lineDir: 'all' })
+  }, [pushNav])
+
   const selectLine = useCallback((lineKey: string) => {
     replaceNav({ ...navRef.current, line: lineKey, run: null, runDep: null })
   }, [replaceNav])
@@ -196,14 +218,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     replaceNav({ ...navRef.current, run: runId, runDep: dep ?? null, stopIdx })
   }, [replaceNav])
 
+  const selectLineDir = useCallback((dir: LineDir) => {
+    replaceNav({ ...navRef.current, lineDir: dir })
+  }, [replaceNav])
+
   const back = useCallback(() => window.history.back(), [])
 
   const value = useMemo<Ctx>(() => ({
     meta, metaError, scrub, setScrub, theme, toggleTheme,
-    nav, goStation, goLine, goRun, setTab, selectLine, selectRun,
+    nav, goStation, goLine, goRun, setTab, setDay, selectLine, selectRun, selectLineDir,
     canGoBack: histLen > 1, back,
   }), [meta, metaError, scrub, setScrub, theme, toggleTheme, nav,
-    goStation, goLine, goRun, setTab, selectLine, selectRun, histLen, back])
+    goStation, goLine, goRun, setTab, setDay, selectLine, selectRun, selectLineDir, histLen, back])
 
   return <C.Provider value={value}>{children}</C.Provider>
 }

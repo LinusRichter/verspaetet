@@ -51,6 +51,7 @@ header { background: var(--bg2); border-bottom: 1px solid var(--border); }
 
 /* ---------- Scrubber ---------- */
 .scrub-row { display: flex; align-items: center; gap: 18px; padding: 4px 18px 12px; }
+.daysel { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font: inherit; font-size: 11px; padding: 4px 6px; flex: 0 0 auto; }
 .scrub-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; flex: 0 0 auto; white-space: nowrap; }
 .scrub-time { font-size: 16px; font-weight: bold; min-width: 56px; flex: 0 0 auto; text-align: right; }
 .scrub-state { font-size: 10px; padding: 1px 6px; border: 1px solid var(--border); color: var(--muted); min-width: 150px; text-align: center; white-space: nowrap; flex: 0 0 auto; }

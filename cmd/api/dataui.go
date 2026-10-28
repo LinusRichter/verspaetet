@@ -171,6 +171,11 @@ type uiLineInfo struct {
 	Ctx   string `json:"ctx,omitempty"`
 }
 
+type uiLineAtStation struct {
+	Line    uiLineInfo `json:"line"`
+	Station string     `json:"station"`
+}
+
 type uiSearchResults struct {
 	Stations []uiSearchStation `json:"stations"`
 	Lines    []uiSearchLine    `json:"lines"`
@@ -181,6 +186,9 @@ type uiSearchResults struct {
 	// Wenn ein Bahnhof stark matchte: die Linien, die dort halten.
 	StationName  string         `json:"stationName,omitempty"`
 	StationLines []uiSearchLine `json:"stationLines,omitempty"`
+
+	// Kombinierte Treffer „Linie an Bahnhof“ („horrem s12“):
+	LineAtStation []uiLineAtStation `json:"lineAtStation,omitempty"`
 }
 
 type uiSearchStation struct {
@@ -564,93 +572,141 @@ func matchScore(norm string, variants []string) int {
 	return best
 }
 
+// Multi-Token-Suche: „horrem s12" klassifiziert JEDES Token separat gegen
+// Stationen (RAM-Index) und Linien (Tagesfakten). Treffen Station- und
+// Linien-Token zusammen → kombinierte „Linie an Bahnhof"-Ergebnisse.
+// Ein-Token-Queries verhalten sich wie vorher (Station ODER Linie).
 func (d *dataUI) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	// Uhrzeit im Query? („porz 14:30")
 	out := uiSearchResults{Stations: []uiSearchStation{}, Lines: []uiSearchLine{}}
-	var stationQ string
 	if t, rest, ok := parseTimeHint(q); ok {
 		tt := t
 		out.Time = &tt
 		q = rest
 	}
-	stationQ = strings.TrimSpace(q)
-	if stationQ == "" {
+	tokens := strings.Fields(strings.TrimSpace(q))
+	if len(tokens) == 0 {
 		writeJSON(w, out)
 		return
 	}
 
-	// Stationen aus dem RAM-Index (fuzzy über normalisierte Formen).
 	d.ensureStations(r)
-	variants := normInput(stationQ)
-	type hit struct {
-		e     stationEntry
-		score int
-	}
-	hits := []hit{}
-	for _, e := range d.stations {
-		if s := matchScore(e.Norm, variants); s >= 0 {
-			hits = append(hits, hit{e, s})
-		}
-	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].score != hits[j].score {
-			return hits[i].score < hits[j].score
-		}
-		return len(hits[i].e.Name) < len(hits[j].e.Name) // kürzer = konkreter
-	})
-	if len(hits) > 7 {
-		hits = hits[:7]
-	}
-	for _, h := range hits {
-		out.Stations = append(out.Stations, uiSearchStation{Name: h.e.Name, N: 0})
-	}
 
-	// Linien: aus den Tagesfakten — NUR aus dem Cache, die Suche stößt nie
-	// eine Tagesberechnung an (Warm-up beim Start füllt den Cache).
+	// Tagesfakten für Linien-Matching (nur Cache, nie Berechnung).
+	type lineEntry struct {
+		cat, label, from, to string
+		n                    int
+	}
+	linesOfDay := map[string]*lineEntry{}
 	if day, ok := d.cachedDay(r); ok {
-		type entry struct {
-			cat, label, from, to string
-			n, score             int
-		}
-		byKey := map[string]*entry{}
 		for _, tf := range day.TripsOfDay {
 			key := lineKeyOf(tf.Cat, tf.Label)
-			e := byKey[key]
+			e := linesOfDay[key]
 			if e == nil {
-				e = &entry{cat: tf.Cat, label: tf.Label, from: tf.DepFrom, to: tf.EndTo}
-				byKey[key] = e
+				e = &lineEntry{cat: tf.Cat, label: tf.Label, from: tf.DepFrom, to: tf.EndTo}
+				linesOfDay[key] = e
 			}
 			e.n++
 		}
-		for _, e := range byKey {
+	}
+
+	// Per-Token-Matching.
+	type tokenMatch struct {
+		token    string
+		stations []stationEntry
+		lines    []*lineEntry
+	}
+	var tms []tokenMatch
+	for _, tok := range tokens {
+		variants := normInput(tok)
+		tm := tokenMatch{token: tok}
+		for i := range d.stations {
+			if s := matchScore(d.stations[i].Norm, variants); s >= 0 {
+				tm.stations = append(tm.stations, d.stations[i])
+			}
+		}
+		sort.SliceStable(tm.stations, func(a, b int) bool { return len(tm.stations[a].Name) < len(tm.stations[b].Name) })
+		if len(tm.stations) > 3 {
+			tm.stations = tm.stations[:3]
+		}
+		for _, e := range linesOfDay {
 			if e.label == "" {
 				continue
 			}
-			label := lineLabelOf(e.cat, e.label)
-			normCat := normName(e.cat) + normName(e.label) // "s"+"6" → "s6"
+			normCat := normName(e.cat) + normName(e.label) // „s"+"6" → „s6"
 			score := matchScore(normCat, variants)
-			if normName(e.label) != "" { // auch "6" allein matchen („6" zeigt S 6, RE 6 …)
+			if normName(e.label) != "" { // Nummer allein matcht („6“ zeigt S 6, RE 6 …)
 				if s2 := matchScore(normName(e.label), variants); s2 >= 0 && (score < 0 || s2+1 < score) {
 					score = s2 + 1
 				}
 			}
-			if score < 0 {
-				continue
+			if score >= 0 {
+				tm.lines = append(tm.lines, e)
 			}
-			out.Lines = append(out.Lines, uiSearchLine{
-				Key: lineKeyOf(e.cat, e.label), Label: label, Cat: e.cat,
-				Ctx: e.from + " ⇢ " + e.to, N: e.n,
-			})
 		}
-		sort.SliceStable(out.Lines, func(i, j int) bool { return out.Lines[i].Label < out.Lines[j].Label })
-		if len(out.Lines) > 6 {
-			out.Lines = out.Lines[:6]
+		sort.SliceStable(tm.lines, func(a, b int) bool { return tm.lines[a].label < tm.lines[b].label })
+		if len(tm.lines) > 4 {
+			tm.lines = tm.lines[:4]
+		}
+		tms = append(tms, tm)
+	}
+
+	// Stationen: Union über alle Tokens (Score = Position).
+	seenSt := map[string]bool{}
+	for _, tm := range tms {
+		for _, st := range tm.stations {
+			if !seenSt[st.Name] && len(out.Stations) < 7 {
+				seenSt[st.Name] = true
+				out.Stations = append(out.Stations, uiSearchStation{Name: st.Name, N: 0})
+			}
 		}
 	}
 
-	// Starker Bahnhofs-Treffer? → Linien, die dort halten (Sektion 3).
+	// Linien: Union über alle Tokens.
+	seenLi := map[string]bool{}
+	for _, tm := range tms {
+		for _, le := range tm.lines {
+			if !seenLi[lineKeyOf(le.cat, le.label)] && len(out.Lines) < 6 {
+				seenLi[lineKeyOf(le.cat, le.label)] = true
+				out.Lines = append(out.Lines, uiSearchLine{
+					Key: lineKeyOf(le.cat, le.label), Label: lineLabelOf(le.cat, le.label),
+					Cat: le.cat, Ctx: le.from + " ⇢ " + le.to, N: le.n,
+				})
+			}
+		}
+	}
+
+	// Kombiniert: Station-Token + Linien-Token → „Linie an Bahnhof".
+	var firstStation *stationEntry
+	for i := range tms {
+		if len(tms[i].stations) > 0 {
+			firstStation = &tms[i].stations[0]
+			break
+		}
+	}
+	if firstStation != nil {
+		for _, tm := range tms {
+			if len(tm.stations) > 0 {
+				continue // Station-Token nicht mit sich selbst kombinieren
+			}
+			for _, le := range tm.lines {
+				if len(out.LineAtStation) >= 3 {
+					break
+				}
+				out.LineAtStation = append(out.LineAtStation, uiLineAtStation{
+					Line: uiLineInfo{
+						Key:   lineKeyOf(le.cat, le.label),
+						Label: lineLabelOf(le.cat, le.label),
+						Cat:   le.cat,
+					},
+					Station: firstStation.Name,
+				})
+			}
+		}
+	}
+
+	// Starker Bahnhofs-Treffer? → Linien, die dort halten.
 	if len(out.Stations) > 0 {
 		out.StationName = out.Stations[0].Name
 		if alt, _ := d.altLinesFor(r, uiLineInfo{}, out.StationName); len(alt) > 0 {
@@ -765,7 +821,15 @@ func buildBoard(raw []rawRow, anchor time.Time) uiBoardData {
 			Planned:   minutesOfDay(s.Planned, anchor),
 			Plat:      s.Platform,
 			PlatFrom:  s.PlatFrom,
-			Dest:      s.Dest,
+			Dest: func() string { // via_path endet am Ziel — S-Bahn hat oft kein direction_name
+				if s.Dest != "" {
+					return s.Dest
+				}
+				if len(s.Via) > 0 {
+					return s.Via[len(s.Via)-1]
+				}
+				return ""
+			}(),
 			Via:       strings.Join(firstN(s.Via, 2), " – "),
 			Cancelled: s.Cancelled,
 		}

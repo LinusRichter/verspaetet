@@ -11,7 +11,7 @@ import { debounce, fmt } from '../lib'
 import { Spinner } from './bits'
 
 interface Item {
-  kind: 'line' | 'station' | 'stationline'
+  kind: 'line' | 'station' | 'stationline' | 'lineatstation'
   key: string
   title: string
   ctx: string
@@ -48,6 +48,13 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
   const items = useMemo<Item[]>(() => {
     if (!res) return []
     const out: Item[] = []
+    for (const la of res.lineAtStation ?? []) {
+      out.push({
+        kind: 'lineatstation', key: 'las-' + la.line.key + '-' + la.station, title: la.line.label + ' · ' + la.station,
+        ctx: 'Linie an Bahnhof → Linien-Ansicht',
+        act: () => { onClose(); goLine(la.line.key, la.station); if (res.time != null) setScrub(res.time) },
+      })
+    }
     for (const l of res.lines) {
       out.push({
         kind: 'line', key: l.key, title: l.label,
@@ -113,6 +120,13 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
           )}
           {!loading && items.length > 0 && (
             <>
+              {items.some((i) => i.kind === 'lineatstation') && (
+                <div className="sgroup">Linie an Bahnhof → Linien-Ansicht</div>
+              )}
+              {items.filter((i) => i.kind === 'lineatstation').map((i) => {
+                const idx = items.indexOf(i)
+                return <PalRow key={i.key} item={i} idx={idx} sel={sel} setSel={setSel} pick={pick} />
+              })}
               {items.some((i) => i.kind === 'line') && <div className="sgroup">Linien → Linien-Ansicht</div>}
               {items.filter((i) => i.kind === 'line').map((i) => {
                 const idx = items.indexOf(i)

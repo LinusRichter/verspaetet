@@ -190,6 +190,57 @@ function altLines(lineKey: string, station: string | null): { list: AltLine[]; s
   }
 }
 
+function searchTokens(q: string): SearchResults {
+  let time: number | null = null
+  const th = parseTimeHint(q)
+  if (th) { time = th.min; q = th.rest }
+  const tokens = q.trim().split(/s+/).filter(Boolean)
+  const out: SearchResults = { stations: [], lines: [] }
+  if (tokens.length === 0) { if (time != null) out.time = time; return out }
+
+  let firstStation: string | null = null
+  const seenSt = new Set<string>(), seenLi = new Set<string>()
+  for (const tok of tokens) {
+    const variants = normInput(tok)
+    // Stationen pro Token
+    const sts = [...STATIONS.keys()].filter((n) => matchScore(normName(n), variants) >= 0).slice(0, 3)
+    for (const st of sts) {
+      if (!seenSt.has(st) && out.stations.length < 7) { seenSt.add(st); out.stations.push({ name: st, n: 0 }) }
+    }
+    if (sts.length > 0 && !firstStation) firstStation = sts[0]
+    // Linien pro Token
+    for (const L of LINES) {
+      const numOnly = normName(L.label.replace(/^[A-Z]+s/, ''))
+      const normCat = normName(L.cat) + numOnly
+      let score = matchScore(normCat, variants)
+      if (numOnly) { const s2 = matchScore(numOnly, variants); if (s2 >= 0 && (score < 0 || s2 + 1 < score)) score = s2 + 1 }
+      if (score < 0) continue
+      const key = L.key
+      if (seenLi.has(key)) continue
+      const runs = RUNS.filter((r) => r.lineKey === key)
+      const mid = runs[0].stops[Math.floor(runs[0].stops.length / 2)].name
+      const line = { key, label: L.label, cat: L.cat, ctx: mid + ' ⇢ ' + runs[0].stops[runs[0].stops.length - 1].name, n: runs.length }
+      if (sts.length > 0) {
+        // Token matchte Stationen: als reines Linien-Ergebnis nur listen, wenn noch Platz
+        if (out.lines.length < 6) { seenLi.add(key); out.lines.push(line) }
+      } else if (firstStation && out.stations.length > 0) {
+        // Token matchte NUR Linien + ein anderes Token eine Station → kombinieren
+        if ((out.lineAtStation?.length ?? 0) < 3) {
+          out.lineAtStation = out.lineAtStation ?? []
+          out.lineAtStation.push({ line: { key, label: L.label, cat: L.cat }, station: firstStation })
+        }
+        if (out.lines.length < 6 && !seenLi.has(key)) { seenLi.add(key); out.lines.push(line) }
+      } else if (out.lines.length < 6) { seenLi.add(key); out.lines.push(line) }
+    }
+  }
+  if (time != null) out.time = time
+  if (out.stations.length > 0) {
+    out.stationName = out.stations[0].name
+    out.stationLines = linesAtStation(out.stations[0].name).map((L) => ({ key: L.key, label: L.label, cat: L.cat, n: 0, ctx: 'hält hier' }))
+  }
+  return out
+}
+
 export default {
   async meta(): Promise<Meta> {
     await delay(60)
@@ -197,6 +248,11 @@ export default {
   },
 
   async search(q: string): Promise<SearchResults> {
+    // Multi-Token wie im Backend: „horrem s12" → Linie an Bahnhof.
+    return searchTokens(q)
+  },
+
+  async _unused_search(q: string): Promise<SearchResults> {
     await delay(140)
     let time: number | null = null
     const th = parseTimeHint(q)

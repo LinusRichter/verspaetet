@@ -7,7 +7,7 @@ import { useApp } from '../state'
 import { clamp, fmt } from '../lib'
 
 export function ScrubBar(): React.ReactNode {
-  const { meta, scrub, setScrub } = useApp()
+  const { meta, scrub, setScrub, nav, setDay } = useApp()
   const track = useRef<HTMLDivElement>(null)
 
   if (!meta) return <div className="scrub-row" />
@@ -27,8 +27,18 @@ export function ScrubBar(): React.ReactNode {
   const ticks: number[] = []
   for (let m = Math.ceil(meta.t0 / stepMin) * stepMin; m <= meta.t1; m += stepMin) ticks.push(m)
 
+  const dayOptions: { v: string | null; label: string }[] = [{ v: null, label: 'Heute' }]
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(Date.now() - i * 86400000)
+    const iso = d.toISOString().slice(0, 10)
+    dayOptions.push({ v: iso, label: i === 1 ? 'Gestern' : i === 2 ? 'Vorgestern' : iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.' })
+  }
+
   return (
     <div className="scrub-row">
+      <select className="daysel" value={nav.day ?? ''} onChange={(e) => setDay(e.target.value || null)} title="Tag des Wissensstands">
+        {dayOptions.map((d) => <option key={d.v ?? 'today'} value={d.v ?? ''}>{d.label}</option>)}
+      </select>
       <span className="scrub-label">Wissensstand</span>
       <span className="scrub-time">{fmt(scrub)}</span>
       <span className={`scrub-state ${stateCls}`}>{state}</span>

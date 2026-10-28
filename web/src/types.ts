@@ -47,12 +47,18 @@ export interface Run {
 
 export interface SearchStation { name: string; n: number }
 export interface SearchLine extends LineInfo { n: number; ctx: string }
+export interface LineAtStation {
+  line: LineInfo
+  station: string
+}
+
 export interface SearchResults {
   stations: SearchStation[]
   lines: SearchLine[]
   time?: number | null          // Uhrzeit im Query erkannt (Minuten)
   stationName?: string          // stärkster Bahnhofs-Treffer …
   stationLines?: SearchLine[]   // … und die Linien, die dort halten
+  lineAtStation?: LineAtStation[] // „horrem s12“ → Linie an Bahnhof
 }
 
 export interface BoardRow {
