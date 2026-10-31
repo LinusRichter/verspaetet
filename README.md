@@ -18,14 +18,14 @@ Collection is watched by a self-hosted Grafana stack:
 
 Monthly Parquet chunks of delay-evolution snapshots for all German IRIS stations.
 
-- **What:** per train stop: planned/actual time, delay, platform (planned/actual), cancellation, line category, public line label (IRIS `l` attribute, e.g. S12 — `train_number` is the operational trip number, 5-digit for S-Bahn), train number, operator, route path. Multiple snapshots per train stop = how the communicated delay evolved over time (the unique value of this dataset: endpoint-only "final delay" data exists elsewhere; this records the whole curve).
+- **What:** per train stop: planned/actual time, delay, platform (planned/actual), cancellation, line category, public line label (IRIS `l` attribute, e.g. S12; `train_number` is the operational trip number, 5-digit for S-Bahn), train number, operator, route path. Multiple snapshots per train stop = how the communicated delay evolved over time (the unique value of this dataset: endpoint-only "final delay" data exists elsewhere; this records the whole curve).
 - **Coverage:** all ~5,400 IRIS-active stations, one snapshot every 40 minutes (same cadence for every station), both directions from one request per station.
 - **Gaps:** known downtime is documented per chunk in `manifest.json` (`coverage.downtimes`) and the chunk README; `coverage.missing_days` lists operating days without any data.
-- **Format:** Parquet (zstd). On HuggingFace: one folder per operating month at `<YYYY-MM>/` containing `stop_events_<YYYY-MM>.parquet`, `stations.parquet` (full registry, refreshed each export), `manifest.json` (SHA256, coverage, schema version) and a per-month `README.md` dataset card. A root `README.md` is regenerated on each export and indexes all chunks. Local copies mirror the same layout under `/exports/<YYYY-MM>/`.
+- **Format:** Parquet (zstd). On HuggingFace: one folder per operating month at `<YYYY-MM>/` containing `stop_events.parquet`, `manifest.json` (SHA256, coverage, schema version) and a per-month `README.md` dataset card. `stations.parquet` (full registry, refreshed each export) and the root `README.md` (index of all chunks, column schema) sit at the repo root and are regenerated on each export. Local copies live under `/exports/<YYYY-MM>/`, with the stop events named `stop_events_<YYYY-MM>.parquet`.
 - **License:** CC BY 4.0 (attribution required, see below).
-- **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet) - first chunk (2026-09) publishes 2026-10-04, one chunk on the 4th of each month (previous operating month, +3 days finality lag).
+- **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet). One chunk per operating month, published on the 4th of the following month (3-day finality lag). First chunk: 2026-09.
 
-> **Note:** This is a POC built entirely with agentic code. The quality is rough.
+> **Status:** Experimental. The code was written largely with AI coding agents. Collection has been running since 2026-09-21.
 >
 > **Rate limits:** Building this dataset (all ~5,400 stations at a consistent cadence) requires a rate limit beyond the free tier (60 req/min for IRIS). Such an increase must be requested from the API provider (developers.deutschebahn.com / IRIS-TTS.API@deutschebahn.com).
 
@@ -55,7 +55,7 @@ scheduler ──minute tick──▶ asynq (Redis) ──▶ worker ──▶ IR
                                 │                │       /fchg (changes, ~4 h window)
                                 │                │       /plan (planned hour slice, cached)
                                 │                ▼
-                                │           Postgres (stop_events — append-only snapshots)
+                                │           Postgres (stop_events, append-only snapshots)
                                 ▼
                              worker ──monthly──▶ Parquet chunk ──▶ HuggingFace
                                                   │
@@ -67,7 +67,7 @@ scheduler ──minute tick──▶ asynq (Redis) ──▶ worker ──▶ IR
 ```
 stations        EVA-keyed station registry (StaDa: name, category, lat/lon)
 scrape_runs     provenance: one row per (station, direction, scrape)
-stop_events     the dataset: snapshots per (station, stop_id) — planned/actual
+stop_events     the dataset: snapshots per (station, stop_id): planned/actual
                 time, platform (planned/actual), route path, cancellation,
                 train category/number/operator; multiple rows per stop =
                 delay evolution
@@ -81,3 +81,7 @@ Views: `delays` (NULL-preserving delay_seconds), `platform_changes`.
 The code of this repository is licensed under **MIT**.
 
 The **collected dataset** (delay snapshots of Deutsche Bahn trains) is derived from data provided by the **Deutsche Bahn Timetables API (IRIS)** and the **DB StaDa API**, which Deutsche Bahn publishes under the [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) license. Any published dataset will therefore be released under CC BY 4.0 with attribution:
+
+> Data: Deutsche Bahn (Timetables API & StaDa API), license CC BY 4.0. Dataset: verspaetet, [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet)
+
+When reusing the dataset, keep this attribution and link the license.
