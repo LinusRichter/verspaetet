@@ -137,10 +137,12 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 		Month:         month,
 		GeneratedAt:   time.Now().UTC(),
 		SchemaVersion: schemaVersion,
-		Attribution:   "Data: Deutsche Bahn (Timetables API & StaDa API), license CC BY 4.0 — verspaetet",
+		Attribution:   datasetAttribution,
 	}
 	m.StopEvents.Rows = rowsWritten
-	m.StopEvents.File = filepath.Base(eventsFile)
+	// Published name: the upload stores the local stop_events_<YYYY-MM>.parquet
+	// as <YYYY-MM>/stop_events.parquet (see repoPath in the HF upload).
+	m.StopEvents.File = "stop_events.parquet"
 	m.StopEvents.SizeBytes = evSize
 	m.StopEvents.Sha256 = evSha
 	m.StopEvents.MinScraped = minScraped
@@ -180,15 +182,27 @@ func WriteOverviewCard(exportsDir string) error {
 	b.WriteString("---\n")
 	b.WriteString("language:\n  - de\n")
 	b.WriteString("license: cc-by-4.0\n")
-	b.WriteString("pretty_name: verspaetet — DB Delay Snapshots\n")
+	b.WriteString("pretty_name: \"verspaetet: Deutsche Bahn delay snapshots\"\n")
+	b.WriteString("size_categories:\n  - 10M<n<100M\n")
 	b.WriteString("tags:\n  - deutsche-bahn\n  - timetable\n  - delay\n  - transportation\n  - railway\n")
+	// configs: lets the Hub's dataset viewer and datasets.load_dataset find the
+	// files in the month-folder layout.
+	b.WriteString("configs:\n")
+	b.WriteString("  - config_name: stop_events\n    data_files: \"20*/stop_events.parquet\"\n    default: true\n")
+	b.WriteString("  - config_name: stations\n    data_files: stations.parquet\n")
 	b.WriteString("---\n\n")
-	b.WriteString("# verspaetet — DB Delay Snapshots\n\n")
-	b.WriteString("Monthly chunks of delay-evolution snapshots collected from Deutsche\n")
-	b.WriteString("Bahn station boards via the official DB Timetables API (IRIS). Each month\n")
-	b.WriteString("lives in its own folder (parquet + manifest.json with checksums + a\n")
-	b.WriteString("per-month README with coverage). This README is regenerated on every\n")
-	b.WriteString("monthly export.\n\n")
+	b.WriteString("# verspaetet: Deutsche Bahn delay snapshots\n\n")
+	b.WriteString("Arrival and departure data for all ~5,400 German IRIS stations, collected\n")
+	b.WriteString("from the official DB Timetables API (IRIS) at the same cadence for every\n")
+	b.WriteString("station. Each train stop is recorded several times, so the data shows how\n")
+	b.WriteString("the communicated delay evolved, not only the final delay.\n\n")
+	b.WriteString("## Layout\n\n")
+	b.WriteString("- `<YYYY-MM>/stop_events.parquet`: all stop-event snapshots of one operating month (zstd)\n")
+	b.WriteString("- `<YYYY-MM>/manifest.json`: SHA256 checksums, coverage, schema version\n")
+	b.WriteString("- `<YYYY-MM>/README.md`: coverage and known gaps of that month\n")
+	b.WriteString("- `stations.parquet`: station registry, refreshed on every export\n\n")
+	b.WriteString("One chunk per operating month, published on the 4th of the following month\n")
+	b.WriteString("(3-day finality lag). This README is regenerated on every export.\n\n")
 	b.WriteString("## Months\n\n")
 	for _, dir := range dirs {
 		month := filepath.Base(dir)
@@ -203,8 +217,11 @@ func WriteOverviewCard(exportsDir string) error {
 				rows = fmt.Sprintf("%d", mj.StopEvents.Rows)
 			}
 		}
-		b.WriteString(fmt.Sprintf("- %s — %s stop-event snapshots — files in %s/, card in %s/README.md\n", month, rows, month, month))
+		b.WriteString(fmt.Sprintf("- [%s](%s/README.md): %s stop-event snapshots\n", month, month, rows))
 	}
+	b.WriteString("\n")
+	b.WriteString(schemaSection)
+	b.WriteString(cardFooter)
 	card := filepath.Join(exportsDir, "README.md")
 	tmp := card + ".tmp"
 	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
@@ -473,6 +490,44 @@ func consumeDowntimeNotes() []string {
 	return notes
 }
 
+// datasetAttribution is the CC BY 4.0 attribution line (manifest + cards).
+const datasetAttribution = "Data: Deutsche Bahn (Timetables API & StaDa API), license CC BY 4.0. Dataset: verspaetet, https://huggingface.co/datasets/LinusRichter404/verspaetet"
+
+// schemaSection documents the Parquet columns (StopEventParquet, StationParquet).
+const schemaSection = "## Schema\n\n" +
+	"`stop_events.parquet`, one row per snapshot of one train stop:\n\n" +
+	"| Column | Type | Description |\n" +
+	"|---|---|---|\n" +
+	"| `station_eva` | string | EVA number of the station |\n" +
+	"| `direction` | string | `arrival` or `departure` |\n" +
+	"| `stop_id` | string | IRIS stop id (`{dailyTripId}-{YYMMddHHmm}-{stopIndex}`), stable across snapshots |\n" +
+	"| `trip_date` | string | operating day of the trip, `YYYY-MM-DD` |\n" +
+	"| `line_category` | string | train category, e.g. `ICE`, `RE`, `S` |\n" +
+	"| `line_label` | string, optional | public line label (IRIS `l`), e.g. `12` for S12; empty before 2026-10-16 |\n" +
+	"| `train_number` | string, optional | operational train number (5-digit trip number for S-Bahn) |\n" +
+	"| `owner` | string, optional | operator code (IRIS `tl o`) |\n" +
+	"| `trip_kind` | string, optional | IRIS trip type: `p` passenger, `e` replacement, `z` additional, `s` suburban, ... |\n" +
+	"| `direction_name` | string, optional | far endpoint: destination for departures, origin for arrivals |\n" +
+	"| `via_path` | string, optional | route stations, pipe-separated |\n" +
+	"| `planned_time` | int64 | planned time, unix seconds UTC |\n" +
+	"| `actual_time` | int64, optional | communicated changed time, unix seconds UTC; null if no change was announced |\n" +
+	"| `planned_platform` | string, optional | planned platform |\n" +
+	"| `platform` | string, optional | current platform (changed platform if announced) |\n" +
+	"| `cancelled` | bool | stop cancelled |\n" +
+	"| `scraped_at` | int64 | time of the snapshot, unix seconds UTC |\n\n" +
+	"Delay in seconds = `actual_time - planned_time`. Group by (`station_eva`, `direction`, `stop_id`)\n" +
+	"and sort by `scraped_at` to follow how the delay evolved.\n\n" +
+	"`stations.parquet`: `eva`, `slug`, `name`, `category` (station category, optional),\n" +
+	"`lat`, `lon` (optional), `federal_state` (optional).\n\n"
+
+// cardFooter closes both cards: attribution and links back to code and write-up.
+const cardFooter = "## License & attribution\n\n" +
+	"CC BY 4.0, derived from Deutsche Bahn open data. When reusing the data, include:\n\n" +
+	"> " + datasetAttribution + "\n\n" +
+	"## Links\n\n" +
+	"- Code: [github.com/LinusRichter/verspaetet](https://github.com/LinusRichter/verspaetet)\n" +
+	"- Project write-up: [linusrichter.de/projects/verspaetet](https://linusrichter.de/projects/verspaetet/)\n"
+
 // WriteDatasetCard generates a README.md for the chunk directory
 // (HuggingFace picks it up as the dataset card).
 func WriteDatasetCard(outDir string, m *Manifest, stationCount int) error {
@@ -483,7 +538,7 @@ func WriteDatasetCard(outDir string, m *Manifest, stationCount int) error {
 	b.WriteString("language:\n")
 	b.WriteString("- de\n")
 	b.WriteString("license: cc-by-4.0\n")
-	b.WriteString("pretty_name: verspaetet — DB Delay Snapshots " + fmt.Sprintf("%04d-%02d\n", m.Year, m.Month))
+	b.WriteString(fmt.Sprintf("pretty_name: \"verspaetet: Deutsche Bahn delay snapshots %04d-%02d\"\n", m.Year, m.Month))
 	b.WriteString("size_categories:\n")
 	b.WriteString("- 10M<n<100M\n")
 	b.WriteString("tags:\n")
@@ -491,16 +546,33 @@ func WriteDatasetCard(outDir string, m *Manifest, stationCount int) error {
 		b.WriteString("- " + t + "\n")
 	}
 	b.WriteString("---\n\n")
-	b.WriteString("# verspaetet — DB delay snapshots " + fmt.Sprintf("%04d-%02d\n\n", m.Year, m.Month))
+	b.WriteString(fmt.Sprintf("# verspaetet: Deutsche Bahn delay snapshots %04d-%02d\n\n", m.Year, m.Month))
 	b.WriteString("Monthly chunk of delay-evolution snapshots collected from Deutsche Bahn\n")
 	b.WriteString("station boards via the official DB Timetables API (IRIS).\n\n")
-	b.WriteString("Each row is one observation of a train's arrival/departure at one station\n")
+	b.WriteString("Each row is one observation of a train's arrival or departure at one station\n")
 	b.WriteString("at one point in time. Multiple rows per stop_id show how the delay evolved\n")
 	b.WriteString("as the train approached. See `manifest.json` for checksums and coverage.\n\n")
 	b.WriteString("## Coverage\n\n")
 	b.WriteString(fmt.Sprintf("- Operating days with data: %d\n", len(m.Coverage.DaysWithEvents)))
-	if len(m.Coverage.MissingDays) > 0 {
-		b.WriteString(fmt.Sprintf("- Known gaps (no data): %s\n", strings.Join(m.Coverage.MissingDays, ", ")))
+	// Days before the first collected day are not gaps: collection had not
+	// started yet (the first month is partial).
+	missing := m.Coverage.MissingDays
+	if days := append([]string(nil), m.Coverage.DaysWithEvents...); len(days) > 0 {
+		sort.Strings(days)
+		first := days[0]
+		if first != fmt.Sprintf("%04d-%02d-01", m.Year, m.Month) {
+			b.WriteString(fmt.Sprintf("- Collection started: %s\n", first))
+		}
+		var gaps []string
+		for _, d := range missing {
+			if d > first {
+				gaps = append(gaps, d)
+			}
+		}
+		missing = gaps
+	}
+	if len(missing) > 0 {
+		b.WriteString(fmt.Sprintf("- Known gaps (no data): %s\n", strings.Join(missing, ", ")))
 	}
 	if len(m.Coverage.Downtimes) > 0 {
 		b.WriteString("- Documented downtimes:\n")
@@ -510,11 +582,11 @@ func WriteDatasetCard(outDir string, m *Manifest, stationCount int) error {
 	}
 	b.WriteString(fmt.Sprintf("- Stations in registry: %d\n\n", stationCount))
 	b.WriteString("## Files\n\n")
-	b.WriteString(fmt.Sprintf("- `%s` — %d rows, %d bytes\n", m.StopEvents.File, m.StopEvents.Rows, m.StopEvents.SizeBytes))
-	b.WriteString(fmt.Sprintf("- `%s` — %d stations\n", m.Stations.File, m.Stations.Rows))
-	b.WriteString("- `manifest.json` — checksums (SHA256), coverage, schema version\n\n")
-	b.WriteString("## License & attribution\n\n")
-	b.WriteString(m.Attribution + "\n")
+	b.WriteString(fmt.Sprintf("- `%04d-%02d/stop_events.parquet`: %d rows, %d bytes\n", m.Year, m.Month, m.StopEvents.Rows, m.StopEvents.SizeBytes))
+	b.WriteString(fmt.Sprintf("- `%04d-%02d/manifest.json`: checksums (SHA256), coverage, schema version\n", m.Year, m.Month))
+	b.WriteString(fmt.Sprintf("- `stations.parquet` (repo root): %d stations\n\n", m.Stations.Rows))
+	b.WriteString(schemaSection)
+	b.WriteString(cardFooter)
 	card := filepath.Join(outDir, "README.md")
 	tmp := card + ".tmp"
 	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
