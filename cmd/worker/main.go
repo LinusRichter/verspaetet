@@ -205,7 +205,6 @@ func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Tas
 			result = "error"
 			return fmt.Errorf("export %s: %w", chunkName, err)
 		}
-		metrics.ExportLastSuccess.SetToCurrentTime()
 		log.Printf("export %s done: %d stop_events, %d stations, manifest at %s",
 			chunkName, m.StopEvents.Rows, m.Stations.Rows, outDir)
 
@@ -213,11 +212,14 @@ func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Tas
 		// unset so local exports work without credentials).
 		if os.Getenv("HF_TOKEN") != "" && os.Getenv("HF_REPO") != "" {
 			if err := activities.UploadToHuggingFace(ctx, filepath.Join(outDir, chunkName)); err != nil {
+				result = "error"
 				return fmt.Errorf("hf upload %s: %w", chunkName, err)
 			}
 		} else {
 			log.Printf("HF_TOKEN/HF_REPO unset — chunk stays local in %s", outDir)
 		}
+		m.ConsumeDowntimeNotes()
+		metrics.ExportLastSuccess.SetToCurrentTime()
 		return nil
 	}
 }

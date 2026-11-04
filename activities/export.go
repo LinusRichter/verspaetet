@@ -89,6 +89,8 @@ type Manifest struct {
 		Downtimes      []string `json:"downtimes"`
 	} `json:"coverage"`
 	Attribution string `json:"attribution"`
+
+	downtimeFiles []string // note files behind Coverage.Downtimes, see ConsumeDowntimeNotes
 }
 
 // ExportMonth exports the given operating month to outDir.
@@ -122,9 +124,9 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	if err != nil {
 		return nil, fmt.Errorf("coverage: %w", err)
 	}
-	downtimes := consumeDowntimeNotes()
+	downtimes, downtimeFiles := readDowntimeNotes()
 	for _, d := range downtimes {
-		log.Printf("[export] consumed downtime note: %s", d)
+		log.Printf("[export] downtime note: %s", d)
 	}
 
 	// ---- manifest ----
@@ -138,6 +140,8 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 		GeneratedAt:   time.Now().UTC(),
 		SchemaVersion: schemaVersion,
 		Attribution:   datasetAttribution,
+
+		downtimeFiles: downtimeFiles,
 	}
 	m.StopEvents.Rows = rowsWritten
 	// Published name: the upload stores the local stop_events_<YYYY-MM>.parquet
@@ -452,21 +456,21 @@ func coverageDays(ctx context.Context, pool *pgxpool.Pool, start, end time.Time)
 	return daysWith, missingDays, nil
 }
 
-// consumeDowntimeNotes reads and deletes all downtime notes from the
-// DOWNTIMES_DIR (default /downtimes). Each file is one note: filename is
-// free-form (e.g. `2026-10-03_server-down.txt`), content is the reason text.
-// Notes are consumed (deleted) after being read so each appears in exactly
-// one manifest. Directory must exist; missing dir = no notes.
-func consumeDowntimeNotes() []string {
+// readDowntimeNotes reads all downtime notes from the DOWNTIMES_DIR (default
+// /downtimes) and returns them with their file paths. Each file is one note:
+// filename is free-form (e.g. `2026-10-03_server-down.txt`), content is the
+// reason text. Nothing is deleted here, so a retried export sees the same
+// notes; see ConsumeDowntimeNotes. Missing dir = no notes.
+func readDowntimeNotes() ([]string, []string) {
 	dir := os.Getenv("DOWNTIMES_DIR")
 	if dir == "" {
 		dir = "/downtimes"
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil // no dir = no notes
+		return nil, nil // no dir = no notes
 	}
-	var notes []string
+	var notes, files []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
 			continue
@@ -482,12 +486,27 @@ func consumeDowntimeNotes() []string {
 			reason = e.Name() + ": " + reason
 		}
 		notes = append(notes, reason)
-		os.Remove(filepath.Join(dir, e.Name()))
+		files = append(files, filepath.Join(dir, e.Name()))
 	}
 	if notes == nil {
 		notes = []string{}
 	}
-	return notes
+	return notes, files
+}
+
+// ConsumeDowntimeNotes deletes the note files recorded in this manifest, so
+// each note appears in exactly one published chunk. Call it only after the
+// chunk is complete (uploaded); notes filed during the export are kept for the
+// next chunk.
+func (m *Manifest) ConsumeDowntimeNotes() {
+	for _, f := range m.downtimeFiles {
+		if err := os.Remove(f); err != nil {
+			log.Printf("WARN remove downtime note %s: %v", f, err)
+			continue
+		}
+		log.Printf("[export] consumed downtime note: %s", filepath.Base(f))
+	}
+	m.downtimeFiles = nil
 }
 
 // datasetAttribution is the CC BY 4.0 attribution line (manifest + cards).
@@ -655,8 +674,8 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 	}
 
 	const hfEndpoint = "https://huggingface.co"
-	// Long timeout: the 308 MB parquet PUT must fit a slow line.
-	client := &http.Client{Timeout: 30 * time.Minute}
+	// Long timeout: the 1 GB parquet PUT must fit a slow line.
+	client := &http.Client{Timeout: 2 * time.Hour}
 
 	// 1) LFS batch for large files: get presigned upload URLs.
 	type lfsAction struct {

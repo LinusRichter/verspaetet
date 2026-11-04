@@ -105,7 +105,7 @@ func enqueueMonthExport(ctx context.Context, client *asynq.Client, forMonth time
 		asynq.NewTask(asynqtasks.TypeExportMonth, payload),
 		asynq.Queue(asynqtasks.QueueExport),
 		asynq.MaxRetry(5),
-		asynq.Timeout(30*time.Minute),
+		asynq.Timeout(asynqtasks.ExportTimeout),
 		asynq.TaskID(fmt.Sprintf("export:%04d%02d", y, m)), // dedup: once per month, ever
 	)
 	switch {

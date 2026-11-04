@@ -79,7 +79,7 @@ func enqueueExport(client *asynq.Client, ym string) {
 		asynq.NewTask(asynqtasks.TypeExportMonth, payload),
 		asynq.Queue(asynqtasks.QueueExport),
 		asynq.MaxRetry(5),
-		asynq.Timeout(30*time.Minute),
+		asynq.Timeout(asynqtasks.ExportTimeout),
 		asynq.TaskID(taskID),
 	)
 	if err != nil {

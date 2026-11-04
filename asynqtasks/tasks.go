@@ -1,5 +1,11 @@
 package asynqtasks
 
+import "time"
+
+// ExportTimeout bounds one export:month attempt: Parquet build (~30 min for
+// 85 M rows) plus the HF upload, on the same box as the nightly pg_dump.
+const ExportTimeout = 3 * time.Hour
+
 // Task type names.
 const (
 	TypeBoardFetch     = "board:fetch"
