@@ -1,11 +1,11 @@
-﻿# docker-compose.yml â€” verspaetet production stack (asynq + IRIS).
+# docker-compose.yml — verspaetet production stack (asynq + IRIS).
 #
 # Services: postgres (data), redis (asynq job queue),
 # migrate (one-shot schema), stationimport (one-shot StaDa station universe),
 # worker (IRIS board fetch + persist), scheduler (tick-per-minute loop),
 # api (health + metrics).
 #
-# Data source: DB Timetables API (IRIS) â€” free plan, 60 req/min.
+# Data source: DB Timetables API (IRIS) — free plan, 60 req/min.
 # Auth: DB-Client-ID + DB-Api-Key headers (both from developers.deutschebahn.com).
 x-logging: &default-logging
   driver: json-file
@@ -69,7 +69,7 @@ services:
        "postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable", "up"]
     restart: "no"
 
-  # stationimport (one-shot): StaDa â†’ stations universe (all ~5400 active
+  # stationimport (one-shot): StaDa → stations universe (all ~5400 active
   # stations with EVA, name, lat/lon, category). Also resolves pending
   # discovery names. Re-run any time; StaDa terms allow ~1 call/day.
   # CSV fallback: command: ["/app/bin/stationimport", "--csv=/stations.csv"]
@@ -103,7 +103,7 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  # worker â€” handles board:fetch tasks (IRIS /plan + /fchg â†’ persist).
+  # worker — handles board:fetch tasks (IRIS /plan + /fchg → persist).
   worker:
     build:
       context: .
@@ -141,7 +141,7 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # scheduler â€” enqueues board:fetch for every station whose fetch_offset
+  # scheduler — enqueues board:fetch for every station whose fetch_offset
   # matches the current minute slot (30-min cadence, ~180 stations/minute).
   scheduler:
     build:
