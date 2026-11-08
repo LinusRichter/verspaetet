@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"verspaetet/activities"
 	asynqtasks "verspaetet/asynqtasks"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -27,6 +28,11 @@ import (
 //	seeder migrate down [N]           rollback the last N migrations
 //	seeder --eva=<eva>                enqueue one board fetch (both directions)
 //	seeder                            enqueue a board:fetch for all stations
+//	seeder --export YYYY-MM           enqueue a monthly export task
+//	seeder --backfill-scrape-runs YYYY-MM [--dry-run]
+//	                                  add scrape_runs to an already-published
+//	                                  month (synchronous, no asynq; needs
+//	                                  POSTGRES_DSN, HF_TOKEN/HF_REPO, EXPORTS_DIR)
 //
 // Periodic monitoring is handled by cmd/scheduler — the seeder is only for
 // manual one-offs and initial dispatch.
@@ -38,9 +44,18 @@ func main() {
 
 	var eva string
 	var export string
+	var backfillScrapeRuns string
+	var dryRun bool
 	flag.StringVar(&eva, "eva", "", "enqueue one board fetch (both directions) for this EVA")
 	flag.StringVar(&export, "export", "", "enqueue a monthly export task (YYYY-MM) — also clears its archived dedup twin")
+	flag.StringVar(&backfillScrapeRuns, "backfill-scrape-runs", "", "backfill scrape_runs.parquet for an already-published month (YYYY-MM); synchronous, no asynq")
+	flag.BoolVar(&dryRun, "dry-run", false, "with --backfill-scrape-runs: prepare and log only, do not upload")
 	flag.Parse()
+
+	if backfillScrapeRuns != "" {
+		runBackfillScrapeRuns(backfillScrapeRuns, dryRun)
+		return
+	}
 
 	redisAddr := envOr("REDIS_ADDR", "redis:6379")
 	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
@@ -100,6 +115,35 @@ func parseYearMonth(s string) (int, int, bool) {
 		return 0, 0, false
 	}
 	return y, m, true
+}
+
+// runBackfillScrapeRuns adds the scrape_runs observation log to an already
+// published month (September/October 2026 are schema v0.2 without it).
+// Synchronous, no asynq: needs POSTGRES_DSN, HF_TOKEN/HF_REPO and
+// EXPORTS_DIR (default /exports). --dry-run prepares and logs only.
+func runBackfillScrapeRuns(ym string, dryRun bool) {
+	y, m, ok := parseYearMonth(ym)
+	if !ok {
+		log.Fatalf("[seeder] --backfill-scrape-runs expects YYYY-MM, got %q", ym)
+	}
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		log.Fatalln("POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		log.Fatalln("Unable to connect to Postgres:", err)
+	}
+	defer pool.Close()
+
+	exportsDir := envOr("EXPORTS_DIR", "/exports")
+	man, err := activities.BackfillScrapeRuns(ctx, pool, exportsDir, y, m, dryRun)
+	if err != nil {
+		log.Fatalf("[seeder] backfill %s failed: %v\n", ym, err)
+	}
+	log.Printf("[seeder] backfill %s ok: scrape_runs %d rows [%s .. %s], sha %s, schema %s\n",
+		ym, man.ScrapeRuns.Rows, man.ScrapeRuns.From, man.ScrapeRuns.To, man.ScrapeRuns.Sha256, man.SchemaVersion)
 }
 
 // enqueueBoardFetch enqueues a single board:fetch task (both directions).
