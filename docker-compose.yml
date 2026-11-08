@@ -3,7 +3,7 @@
 # Services: postgres (data), redis (asynq job queue),
 # migrate (one-shot schema), stationimport (one-shot StaDa station universe),
 # worker (IRIS board fetch + persist), scheduler (tick-per-minute loop),
-# api (Web UI + JSON).
+# api (health + metrics).
 #
 # Data source: DB Timetables API (IRIS) â€” free plan, 60 req/min.
 # Auth: DB-Client-ID + DB-Api-Key headers (both from developers.deutschebahn.com).
@@ -199,7 +199,6 @@ services:
 
 volumes:
   verspaetet_pg:
-    name: bahn-downfall_bahn_downfall_pg
   verspaetet_redis:
   verspaetet_exports:
   verspaetet_downtimes:
