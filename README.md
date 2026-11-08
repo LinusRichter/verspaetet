@@ -4,6 +4,8 @@ Experimental project to aggregate a dataset of Deutsche Bahn delays at train sta
 
 verspaetet (German for "delayed") collects departure and arrival board data for all ~5,400 German IRIS stations via the official DB Timetables API, stores every change of a train's forecast in Postgres, and publishes the result as a monthly delay-evolution dataset on HuggingFace.
 
+To browse and analyse the published data, see [verspaetet-explorer](https://github.com/LinusRichter/verspaetet-explorer).
+
 ## Ops monitoring
 
 Collection is watched by a self-hosted Grafana stack:
