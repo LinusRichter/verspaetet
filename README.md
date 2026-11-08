@@ -2,11 +2,7 @@
 
 Experimental project to aggregate a dataset of Deutsche Bahn delays at train stations.
 
-verspaetet (German for "delayed") collects departure and arrival board data for all ~5,400 German IRIS stations via the official DB Timetables API, persists every snapshot to Postgres, and publishes the result as a monthly delay-evolution dataset on HuggingFace. A built-in data UI lets you scrub through time and watch how delays evolved.
-
-![Knowledge-scrubber: move through time and watch the delay evolution of a train](img/dataui-scrubber.gif)
-
-![Station board Frankfurt (Main) Hbf](img/dataui-board.png)
+verspaetet (German for "delayed") collects departure and arrival board data for all ~5,400 German IRIS stations via the official DB Timetables API, stores every change of a train's forecast in Postgres, and publishes the result as a monthly delay-evolution dataset on HuggingFace.
 
 ## Ops monitoring
 
@@ -21,7 +17,8 @@ Monthly Parquet chunks of delay-evolution snapshots for all German IRIS stations
 - **What:** per train stop: planned/actual time, delay, platform (planned/actual), cancellation, line category, public line label (IRIS `l` attribute, e.g. S12; `train_number` is the operational trip number, 5-digit for S-Bahn), train number, operator, route path. Multiple snapshots per train stop = how the communicated delay evolved over time (the unique value of this dataset: endpoint-only "final delay" data exists elsewhere; this records the whole curve).
 - **Coverage:** all ~5,400 IRIS-active stations, one snapshot every 40 minutes (same cadence for every station), both directions from one request per station.
 - **Gaps:** known downtime is documented per chunk in `manifest.json` (`coverage.downtimes`) and the chunk README; `coverage.missing_days` lists operating days without any data.
-- **Format:** Parquet (zstd). On HuggingFace: one folder per operating month at `<YYYY-MM>/` containing `stop_events.parquet`, `manifest.json` (SHA256, coverage, schema version) and a per-month `README.md` dataset card. `stations.parquet` (full registry, refreshed each export) and the root `README.md` (index of all chunks, column schema) sit at the repo root and are regenerated on each export. Local copies live under `/exports/<YYYY-MM>/`, with the stop events named `stop_events_<YYYY-MM>.parquet`.
+- **Snapshots are change-only:** a new row is written only when actual time, platform, destination, route or cancellation changed. `scrape_runs.parquet` (from schema v0.3) is the fetch log: one row per successful board fetch per station and direction, so "unchanged" can be told apart from "not observed".
+- **Format:** Parquet (zstd). On HuggingFace: one folder per operating month at `<YYYY-MM>/` containing `stop_events.parquet`, `scrape_runs.parquet`, `manifest.json` (SHA256, coverage, schema version) and a per-month `README.md` dataset card. `stations.parquet` (full registry, refreshed each export) and the root `README.md` (index of all chunks, column schema) sit at the repo root and are regenerated on each export. Local copies live under `/exports/<YYYY-MM>/`, with the stop events named `stop_events_<YYYY-MM>.parquet`.
 - **License:** CC BY 4.0 (attribution required, see below).
 - **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet). One chunk per operating month, published on the 4th of the following month (3-day finality lag). First chunk: 2026-09.
 
@@ -44,9 +41,7 @@ cp .env.example .env   # set POSTGRES_PASSWORD, IRIS_CLIENT_ID, IRIS_API_KEY
 docker compose up -d
 ```
 
-UIs:
-- Data UI: `http://localhost:8080`
-- Ops dashboard: `http://localhost:8082`
+Ops dashboard (Grafana): `http://localhost:8082`. The API on `:8080` only serves `/api/health` and `/metrics`.
 
 ## Architecture
 
@@ -55,22 +50,22 @@ scheduler ──minute tick──▶ asynq (Redis) ──▶ worker ──▶ IR
                                 │                │       /fchg (changes, ~4 h window)
                                 │                │       /plan (planned hour slice, cached)
                                 │                ▼
-                                │           Postgres (stop_events, append-only snapshots)
+                                │           Postgres (stop_events: change-only snapshots)
                                 ▼
                              worker ──monthly──▶ Parquet chunk ──▶ HuggingFace
-                                                  │
-                                                  └─▶ API (:8080) ──▶ Data UI (web/dist)
+
+API (:8080): /api/health + /metrics ──▶ VictoriaMetrics ──▶ Grafana (:8082)
 ```
 
 ## Data model
 
 ```
 stations        EVA-keyed station registry (StaDa: name, category, lat/lon)
-scrape_runs     provenance: one row per (station, direction, scrape)
-stop_events     the dataset: snapshots per (station, stop_id): planned/actual
-                time, platform (planned/actual), route path, cancellation,
-                train category/number/operator; multiple rows per stop =
-                delay evolution
+scrape_runs     fetch log: one row per successful (station, direction, scrape)
+stop_events     the dataset: change-only snapshots per (station, stop_id):
+                planned/actual time, platform (planned/actual), route path,
+                cancellation, train category/number/operator; multiple rows
+                per stop = delay evolution
 pending_stations discovery: unresolved route-path names
 ```
 
