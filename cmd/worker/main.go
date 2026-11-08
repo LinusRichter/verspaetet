@@ -116,13 +116,18 @@ func makeBoardFetchHandler(iris *activities.Iris, processor *activities.Process,
 		// (200 + <timetable/>, 13 bytes). If the station has NEVER yielded
 		// events, it is permanently empty — mark it so the scheduler stops
 		// wasting slots. A station with prior data gets a transient empty
-		// board sometimes (froendenberg-froemern, day one); those must NOT
-		// be marked — treat as a normal empty fetch.
+		// board sometimes (froendenberg-froemern, day one; line closures for
+		// days); those must NOT be marked — treat as a normal empty fetch.
+		//
+		// "Ever yielded events" is read from scrape_runs, not stop_events:
+		// exported months are deleted from stop_events, so a station that is
+		// silent for a while would otherwise look like it never had data.
+		// scrape_runs keeps one row per successful fetch and is not pruned.
 		if len(stationResult.Events) == 0 {
 			result = "empty_board"
-			var prior int
+			var hadData bool
 			if qerr := pool.QueryRow(ctx,
-				"SELECT count(*) FROM stop_events WHERE station_eva = $1", p.Eva).Scan(&prior); qerr == nil && prior == 0 {
+				"SELECT EXISTS (SELECT 1 FROM scrape_runs WHERE station_eva = $1)", p.Eva).Scan(&hadData); qerr == nil && !hadData {
 				result = "no_iris"
 				if _, uerr := pool.Exec(ctx,
 					"UPDATE stations SET no_iris = true WHERE eva = $1", p.Eva); uerr != nil {
