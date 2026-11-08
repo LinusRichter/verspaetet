@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -203,9 +204,15 @@ func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Tas
 			return fmt.Errorf("invalid year/month %d/%d: %w", p.Year, p.Month, asynq.SkipRetry)
 		}
 		outDir := envOr("EXPORTS_DIR", "/exports")
-		schema := envOr("DATASET_SCHEMA_VERSION", "v0.2")
+		schema := envOr("DATASET_SCHEMA_VERSION", "v0.3")
 		chunkName := fmt.Sprintf("%04d-%02d", p.Year, p.Month)
 		m, err := activities.ExportMonth(ctx, pool, filepath.Join(outDir, chunkName), p.Year, p.Month, schema)
+		if errors.Is(err, activities.ErrEmptyMonth) {
+			// Nothing to publish (e.g. a month whose rows were already
+			// exported and deleted). Retrying cannot help.
+			result = "empty"
+			return fmt.Errorf("export %s: %v: %w", chunkName, err, asynq.SkipRetry)
+		}
 		if err != nil {
 			result = "error"
 			return fmt.Errorf("export %s: %w", chunkName, err)

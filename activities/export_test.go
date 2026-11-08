@@ -3,6 +3,7 @@ package activities
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -51,5 +52,96 @@ func TestDowntimeNotesMissingDir(t *testing.T) {
 	t.Setenv("DOWNTIMES_DIR", filepath.Join(t.TempDir(), "nope"))
 	if notes, files := readDowntimeNotes(); notes != nil || files != nil {
 		t.Fatalf("got notes %q files %q", notes, files)
+	}
+}
+
+func TestHfRepoPath(t *testing.T) {
+	cases := []struct{ month, name, want string }{
+		{"2026-11", "stations.parquet", "stations.parquet"},
+		{"2026-11", "stop_events_2026-11.parquet", "2026-11/stop_events.parquet"},
+		{"2026-11", "scrape_runs_2026-11.parquet", "2026-11/scrape_runs.parquet"},
+		{"2026-11", "manifest.json", "2026-11/manifest.json"},
+		{"2026-11", "README.md", "2026-11/README.md"},
+	}
+	for _, c := range cases {
+		if got := hfRepoPath(c.month, c.name); got != c.want {
+			t.Errorf("hfRepoPath(%q, %q) = %q, want %q", c.month, c.name, got, c.want)
+		}
+	}
+}
+
+func TestIsOldFlatRepoPath(t *testing.T) {
+	// Leftovers of the old flat layout (and duplicate month-suffixed
+	// parquets inside month folders) get removed by the regular upload.
+	for _, p := range []string{
+		"stop_events_2026-09.parquet",
+		"manifest.json",
+		"2026-10/stop_events_2026-10.parquet",
+	} {
+		if !isOldFlatRepoPath(p) {
+			t.Errorf("isOldFlatRepoPath(%q) = false, want true", p)
+		}
+	}
+	// The current layout must never be deleted — including the new
+	// scrape_runs file.
+	for _, p := range []string{
+		"2026-10/scrape_runs.parquet",
+		"2026-10/stop_events.parquet",
+		"stations.parquet",
+		"2026-10/manifest.json",
+		"2026-10/README.md",
+		"README.md",
+	} {
+		if isOldFlatRepoPath(p) {
+			t.Errorf("isOldFlatRepoPath(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestWriteDatasetCardScrapeRuns(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manifest{Year: 2026, Month: 11, SchemaVersion: "v0.3"}
+	m.StopEvents.Rows = 25266564
+	m.Stations.Rows = 5461
+	m.ScrapeRuns.Rows = 11000000
+	m.ScrapeRuns.File = "scrape_runs.parquet"
+	if err := WriteDatasetCard(dir, m, 5461); err != nil {
+		t.Fatal(err)
+	}
+	card, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(card)
+	if !strings.Contains(s, "stop_events is change-only: a new row is written only when actual time, platform, destination, route or cancellation changed.") {
+		t.Error("card must contain the exact change-only sentence")
+	}
+	if !strings.Contains(s, "scrape_runs") {
+		t.Error("card must mention scrape_runs for a v0.3 manifest")
+	}
+	if !strings.Contains(s, "scrape_runs.parquet`: 11000000 rows") {
+		t.Error("Files section must list the scrape_runs file")
+	}
+}
+
+func TestWriteDatasetCardOldManifest(t *testing.T) {
+	// A v0.2 manifest (no scrape_runs) must not list the file.
+	dir := t.TempDir()
+	m := &Manifest{Year: 2026, Month: 9, SchemaVersion: "v0.2"}
+	m.StopEvents.Rows = 25266564
+	m.Stations.Rows = 5461
+	if err := WriteDatasetCard(dir, m, 5461); err != nil {
+		t.Fatal(err)
+	}
+	card, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(card)
+	if strings.Contains(s, "/scrape_runs.parquet`") {
+		t.Error("old manifest card must not list a scrape_runs file")
+	}
+	if !strings.Contains(s, "has no fetch log") {
+		t.Error("old manifest card must say that unchanged and not observed cannot be told apart")
 	}
 }

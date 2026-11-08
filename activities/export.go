@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -61,6 +62,15 @@ type StationParquet struct {
 	FederalState *string  `parquet:"federal_state,optional"`
 }
 
+// ScrapeRunParquet is the observation log: one row per successful board
+// fetch per (station, direction). Lets consumers tell "unchanged" apart
+// from "not observed" (stop_events is change-only).
+type ScrapeRunParquet struct {
+	StationEva string `parquet:"station_eva"`
+	Direction  string `parquet:"direction"`
+	ScrapedAt  int64  `parquet:"scraped_at"` // unix seconds UTC
+}
+
 // Manifest describes one exported monthly chunk.
 type Manifest struct {
 	Year          int       `json:"year"`
@@ -81,6 +91,14 @@ type Manifest struct {
 		SizeBytes int64  `json:"size_bytes"`
 		Sha256    string `json:"sha256"`
 	} `json:"stations"`
+	ScrapeRuns struct {
+		Rows      int64  `json:"rows"`
+		File      string `json:"file"`
+		SizeBytes int64  `json:"size_bytes"`
+		Sha256    string `json:"sha256"`
+		From      string `json:"from"` // RFC3339, inclusive
+		To        string `json:"to"`   // RFC3339, inclusive
+	} `json:"scrape_runs"`
 	Coverage struct {
 		// Days in the month with at least one collected event. Days NOT in
 		// this list (within the collected range) are known gaps.
@@ -113,10 +131,43 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 		return nil, fmt.Errorf("export stop_events: %w", err)
 	}
 
+	// Empty-month guard: September/October 2026 rows were deleted from
+	// Postgres (they live on HuggingFace only). A re-export must never
+	// publish an empty chunk over the real one — refuse before anything
+	// else is written or uploaded (no stations, no manifest, no README).
+	if rowsWritten == 0 {
+		if err := os.Remove(eventsFile); err != nil && !os.IsNotExist(err) {
+			log.Printf("WARN remove empty events file: %v", err)
+		}
+		return nil, fmt.Errorf("export %04d-%02d: %w", year, month, ErrEmptyMonth)
+	}
+
 	// ---- stations: full registry (small, refreshed each chunk) ----
 	stationsRows, err := exportStations(ctx, pool, stationsFile)
 	if err != nil {
 		return nil, fmt.Errorf("export stations: %w", err)
+	}
+
+	// ---- scrape_runs: observation log for the exported range ----
+	// Range = the exact scraped_at range of the exported stop_events:
+	// stop_events is selected by trip_date, and those trips are scraped
+	// from the evening before the month starts until after it ends. Overlap
+	// with the neighbouring month's file is expected and fine.
+	if minScraped == "" || maxScraped == "" {
+		return nil, fmt.Errorf("export %04d-%02d: non-empty month but empty scraped_at range", year, month)
+	}
+	srFrom, err := time.Parse(time.RFC3339, minScraped)
+	if err != nil {
+		return nil, fmt.Errorf("export scrape_runs: parse min_scraped_at %q: %w", minScraped, err)
+	}
+	srTo, err := time.Parse(time.RFC3339, maxScraped)
+	if err != nil {
+		return nil, fmt.Errorf("export scrape_runs: parse max_scraped_at %q: %w", maxScraped, err)
+	}
+	scrapeRunsFile := filepath.Join(outDir, fmt.Sprintf("scrape_runs_%s.parquet", monthPrefix))
+	scrapeRunsRows, err := exportScrapeRuns(ctx, pool, scrapeRunsFile, srFrom, srTo)
+	if err != nil {
+		return nil, fmt.Errorf("export scrape_runs: %w", err)
 	}
 
 	// ---- coverage: days with events, missing days, consumed downtimes ----
@@ -132,8 +183,10 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	// ---- manifest ----
 	evSize, _ := fileSize(eventsFile)
 	stSize, _ := fileSize(stationsFile)
+	srSize, _ := fileSize(scrapeRunsFile)
 	evSha, _ := fileSHA256(eventsFile)
 	stSha, _ := fileSHA256(stationsFile)
+	srSha, _ := fileSHA256(scrapeRunsFile)
 	m := &Manifest{
 		Year:          year,
 		Month:         month,
@@ -145,7 +198,7 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	}
 	m.StopEvents.Rows = rowsWritten
 	// Published name: the upload stores the local stop_events_<YYYY-MM>.parquet
-	// as <YYYY-MM>/stop_events.parquet (see repoPath in the HF upload).
+	// as <YYYY-MM>/stop_events.parquet (see hfRepoPath in the HF upload).
 	m.StopEvents.File = "stop_events.parquet"
 	m.StopEvents.SizeBytes = evSize
 	m.StopEvents.Sha256 = evSha
@@ -155,6 +208,14 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	m.Stations.File = filepath.Base(stationsFile)
 	m.Stations.SizeBytes = stSize
 	m.Stations.Sha256 = stSha
+	m.ScrapeRuns.Rows = scrapeRunsRows
+	// Published name: scrape_runs_<YYYY-MM>.parquet → <YYYY-MM>/scrape_runs.parquet
+	// (same mapping as stop_events, see hfRepoPath).
+	m.ScrapeRuns.File = "scrape_runs.parquet"
+	m.ScrapeRuns.SizeBytes = srSize
+	m.ScrapeRuns.Sha256 = srSha
+	m.ScrapeRuns.From = minScraped
+	m.ScrapeRuns.To = maxScraped
 	m.Coverage.DaysWithEvents = daysWith
 	m.Coverage.MissingDays = missingDays
 	m.Coverage.Downtimes = downtimes
@@ -169,7 +230,7 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	if err := WriteOverviewCard(filepath.Dir(outDir)); err != nil {
 		log.Printf("WARN overview card: %v", err)
 	}
-	log.Printf("[export] %d-%02d: %d stop_events, %d stations -> %s", year, month, rowsWritten, stationsRows, outDir)
+	log.Printf("[export] %d-%02d: %d stop_events, %d stations, %d scrape_runs -> %s", year, month, rowsWritten, stationsRows, scrapeRunsRows, outDir)
 	return m, nil
 }
 
@@ -204,6 +265,7 @@ func WriteOverviewCard(exportsDir string) error {
 	b.WriteString("- `<YYYY-MM>/stop_events.parquet`: all stop-event snapshots of one operating month (zstd)\n")
 	b.WriteString("- `<YYYY-MM>/manifest.json`: SHA256 checksums, coverage, schema version\n")
 	b.WriteString("- `<YYYY-MM>/README.md`: coverage and known gaps of that month\n")
+	b.WriteString("- `<YYYY-MM>/scrape_runs.parquet`: observation log, one row per successful board fetch (chunks from schema v0.3)\n")
 	b.WriteString("- `stations.parquet`: station registry, refreshed on every export\n\n")
 	b.WriteString("One chunk per operating month, published on the 4th of the following month\n")
 	b.WriteString("(3-day finality lag). This README is regenerated on every export.\n\n")
@@ -399,6 +461,76 @@ func exportStations(ctx context.Context, pool *pgxpool.Pool, path string) (int64
 	return written, nil
 }
 
+// exportScrapeRuns writes the observation log (one row per successful board fetch per
+// (station, direction)) for [from, to], both inclusive, to a Parquet file —
+// same tmp-file → close → sync → rename pattern as exportStations. Uses the
+// idx_scrape_runs_scraped_at index (migration 0003). The bounds come from
+// whole-second unix timestamps (rounded), so the query is widened by one
+// second on each side: a fetch at the exact first/last snapshot must never
+// fall out of the log.
+func exportScrapeRuns(ctx context.Context, pool *pgxpool.Pool, path string, from, to time.Time) (int64, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT station_eva, direction, EXTRACT(EPOCH FROM scraped_at)::bigint
+		FROM scrape_runs
+		WHERE scraped_at >= $1 AND scraped_at <= $2
+		ORDER BY station_eva, direction, scraped_at`, from.Add(-time.Second), to.Add(time.Second))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	w := parquet.NewGenericWriter[ScrapeRunParquet](f, parquet.Compression(&zstd.Codec{}))
+
+	var written int64
+	buf := make([]ScrapeRunParquet, 0, 1000)
+	for rows.Next() {
+		var s ScrapeRunParquet
+		if err := rows.Scan(&s.StationEva, &s.Direction, &s.ScrapedAt); err != nil {
+			return 0, err
+		}
+		buf = append(buf, s)
+		written++
+		if len(buf) >= 1000 {
+			if _, err := w.Write(buf); err != nil {
+				return 0, err
+			}
+			buf = buf[:0]
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(buf) > 0 {
+		if _, err := w.Write(buf); err != nil {
+			return 0, err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return 0, err
+	}
+	if err := f.Sync(); err != nil {
+		return 0, err
+	}
+	if err := f.Close(); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return 0, err
+	}
+	return written, nil
+}
+
+// ErrEmptyMonth is returned when a month has no stop_events rows to export.
+// Old months (already published, rows since deleted from Postgres) must
+// never be re-exported as empty chunks over the published ones.
+var ErrEmptyMonth = errors.New("month has no stop_events rows")
+
 func fileSize(path string) (int64, error) {
 	st, err := os.Stat(path)
 	if err != nil {
@@ -568,9 +700,24 @@ func WriteDatasetCard(outDir string, m *Manifest, stationCount int) error {
 	b.WriteString(fmt.Sprintf("# verspaetet: Deutsche Bahn delay snapshots %04d-%02d\n\n", m.Year, m.Month))
 	b.WriteString("Monthly chunk of delay-evolution snapshots collected from Deutsche Bahn\n")
 	b.WriteString("station boards via the official DB Timetables API (IRIS).\n\n")
-	b.WriteString("Each row is one observation of a train's arrival or departure at one station\n")
-	b.WriteString("at one point in time. Multiple rows per stop_id show how the delay evolved\n")
-	b.WriteString("as the train approached. See `manifest.json` for checksums and coverage.\n\n")
+	b.WriteString("Each row is a state change of a train's arrival/departure at one station,\n")
+	b.WriteString("stamped with the time it was observed. Multiple rows per stop_id show how\n")
+	b.WriteString("the delay evolved as the train approached. See `manifest.json` for\n")
+	b.WriteString("checksums and coverage.\n\n")
+	// Change-only semantics + observation log — without this, consumers
+	// wrongly read one row per scrape.
+	hasScrapeRuns := m.ScrapeRuns.Rows > 0 || m.ScrapeRuns.File != ""
+	b.WriteString("## How to read the snapshots\n\n")
+	b.WriteString("- stop_events is change-only: a new row is written only when actual time, platform, destination, route or cancellation changed.\n")
+	if !hasScrapeRuns {
+		b.WriteString("- This chunk has no fetch log (`scrape_runs.parquet`), so between two snapshots \"unchanged\" cannot be told apart from \"not observed\".\n")
+	}
+	if hasScrapeRuns {
+		b.WriteString("- A `scrape_runs` row (station_eva, direction, scraped_at) means: this station's board was successfully fetched at this time and contained at least one event of this direction. No row = no successful observation at that time (failure, backlog, downtime, or an empty board).\n")
+		b.WriteString("- For a stop with snapshots at t1 < t2, every `scrape_runs` row of the same station and direction in between marks a fetch in which the stop's observable fields were unchanged — provided the stop was on the board at that time (the full /fchg document plus the current hour's /plan slice). Reliable for stops with at least one change entry (they appear in every /fchg) and for plan-hour stops; best-effort otherwise.\n")
+		b.WriteString("- The `scrape_runs` range can overlap the neighbouring month's file: stop_events is selected by operating day, so trips of this month are scraped from the evening before the month starts until after it ends.\n")
+	}
+	b.WriteString("\n")
 	b.WriteString("## Coverage\n\n")
 	b.WriteString(fmt.Sprintf("- Operating days with data: %d\n", len(m.Coverage.DaysWithEvents)))
 	// Days before the first collected day are not gaps: collection had not
@@ -602,9 +749,16 @@ func WriteDatasetCard(outDir string, m *Manifest, stationCount int) error {
 	b.WriteString(fmt.Sprintf("- Stations in registry: %d\n\n", stationCount))
 	b.WriteString("## Files\n\n")
 	b.WriteString(fmt.Sprintf("- `%04d-%02d/stop_events.parquet`: %d rows, %d bytes\n", m.Year, m.Month, m.StopEvents.Rows, m.StopEvents.SizeBytes))
+	if hasScrapeRuns {
+		b.WriteString(fmt.Sprintf("- `%04d-%02d/scrape_runs.parquet`: %d rows — every successful board fetch (observation log)\n", m.Year, m.Month, m.ScrapeRuns.Rows))
+	}
 	b.WriteString(fmt.Sprintf("- `%04d-%02d/manifest.json`: checksums (SHA256), coverage, schema version\n", m.Year, m.Month))
 	b.WriteString(fmt.Sprintf("- `stations.parquet` (repo root): %d stations\n\n", m.Stations.Rows))
 	b.WriteString(schemaSection)
+	if hasScrapeRuns {
+		b.WriteString("`scrape_runs.parquet` (schema v0.3 and later): `station_eva`, `direction`,\n")
+		b.WriteString("`scraped_at` (unix seconds UTC) — the observation log described above.\n\n")
+	}
 	b.WriteString(cardFooter)
 	card := filepath.Join(outDir, "README.md")
 	tmp := card + ".tmp"
@@ -628,6 +782,48 @@ func writeJSONAtomic(path string, v interface{}) error {
 
 var _ = log.Printf
 
+// hfRepoPath maps a local chunk file name to its published path in the HF
+// dataset repo (month-folder layout): stations.parquet stays at the repo
+// root, month-suffixed parquets get their uniform in-folder name.
+func hfRepoPath(month, name string) string {
+	if name == "stations.parquet" {
+		return name
+	}
+	if parts := strings.SplitN(name, ".parquet", 2); len(parts) > 1 {
+		if strings.HasPrefix(parts[0], "stop_events") {
+			// stop_events_2026-09.parquet → <month>/stop_events.parquet
+			// (der Ordner trägt bereits den Monat; im Ordner ein einheitlicher Name)
+			return month + "/stop_events.parquet"
+		}
+		if strings.HasPrefix(parts[0], "scrape_runs") {
+			// scrape_runs_2026-11.parquet → <month>/scrape_runs.parquet
+			return month + "/scrape_runs.parquet"
+		}
+	}
+	return month + "/" + name
+}
+
+// isOldFlatRepoPath reports whether a repo-tree path is a leftover of the
+// pre-folder layout (or a duplicate month-suffixed parquet inside a month
+// folder) that the regular upload removes. Never matches the current
+// layout: <month>/stop_events.parquet, <month>/scrape_runs.parquet,
+// stations.parquet.
+func isOldFlatRepoPath(path string) bool {
+	if strings.HasPrefix(path, "stop_events_") && strings.HasSuffix(path, ".parquet") && !strings.Contains(path, "/") {
+		return true
+	}
+	if path == "manifest.json" {
+		return true
+	}
+	if strings.Contains(path, "/") && strings.HasPrefix(path, "20") &&
+		strings.HasPrefix(filepath.Base(path), "stop_events_") &&
+		filepath.Base(path) != "stop_events.parquet" &&
+		strings.HasSuffix(path, ".parquet") {
+		return true
+	}
+	return false
+}
+
 // UploadToHuggingFace uploads the exported chunk files to the HF dataset repo
 // via the Hub REST API — NO git. Files larger than lfsThreshold go through the
 // LFS protocol (batch → presigned PUT → verify), everything else is inlined
@@ -636,6 +832,21 @@ var _ = log.Printf
 // the same paths. HF_TOKEN and HF_REPO must be set
 // (e.g. HF_TOKEN=hf_..., HF_REPO=LinusRichter404/verspaetet).
 func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
+	return uploadToHuggingFace(ctx, chunkDir, hfUploadOpts{includeOverview: true, cleanupOldFlat: true})
+}
+
+// hfUploadOpts guards the two repo-wide side effects of the upload so the
+// scrape_runs backfill can reuse it without touching anything outside its
+// own month folder.
+type hfUploadOpts struct {
+	includeOverview bool // upload the root README from the parent dir (regular export)
+	cleanupOldFlat  bool // delete old flat files from the repo tree (regular export)
+}
+
+// hfEndpoint is the HuggingFace Hub base URL (upload + manifest download).
+const hfEndpoint = "https://huggingface.co"
+
+func uploadToHuggingFace(ctx context.Context, chunkDir string, opts hfUploadOpts) error {
 	token := os.Getenv("HF_TOKEN")
 	repo := os.Getenv("HF_REPO")
 	if token == "" || repo == "" {
@@ -673,7 +884,6 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 		return fmt.Errorf("no files in %s", chunkDir)
 	}
 
-	const hfEndpoint = "https://huggingface.co"
 	// Long timeout: the 1 GB parquet PUT must fit a slow line.
 	client := &http.Client{Timeout: 2 * time.Hour}
 
@@ -809,17 +1019,6 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 	//    <month>/stop_events.parquet, <month>/manifest.json, <month>/README.md;
 	//    stations.parquet (Registry, immer aktuell) + README.md (Übersicht) flat.
 	month := filepath.Base(chunkDir)
-	repoPath := func(name string) string {
-		if name == "stations.parquet" {
-			return name
-		}
-		if parts := strings.SplitN(name, ".parquet", 2); strings.HasPrefix(parts[0], "stop_events") && len(parts) > 1 {
-			// stop_events_2026-09.parquet → <month>/stop_events.parquet
-			// (der Ordner trägt bereits den Monat; im Ordner ein einheitlicher Name)
-			return month + "/" + "stop_events.parquet"
-		}
-		return month + "/" + name
-	}
 	commitMsg := fmt.Sprintf("dataset chunk %s", month)
 	var commitBody bytes.Buffer
 	enc := json.NewEncoder(&commitBody)
@@ -827,7 +1026,7 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 		"summary": commitMsg, "description": "verspaetet monthly export",
 	}})
 	for _, f := range files {
-		path := repoPath(f.name)
+		path := hfRepoPath(month, f.name)
 		if f.lfs {
 			enc.Encode(map[string]interface{}{"key": "lfsFile", "value": map[string]interface{}{
 				"path": path, "algo": "sha256", "oid": f.sha, "size": f.size,
@@ -843,46 +1042,50 @@ func UploadToHuggingFace(ctx context.Context, chunkDir string) error {
 		}
 	}
 	// Root-Übersichts-README aus dem exports-Dir (wird von WriteOverviewCard
-	// bei jedem Export neu generiert) → Repo-Card.
-	if overview, err := os.ReadFile(filepath.Join(filepath.Dir(chunkDir), "README.md")); err == nil {
-		enc.Encode(map[string]interface{}{"key": "file", "value": map[string]interface{}{
-			"path": "README.md", "content": base64.StdEncoding.EncodeToString(overview), "encoding": "base64",
-		}})
+	// bei jedem Export neu generiert) → Repo-Card. Der Backfill lässt es weg.
+	if opts.includeOverview {
+		if overview, err := os.ReadFile(filepath.Join(filepath.Dir(chunkDir), "README.md")); err == nil {
+			enc.Encode(map[string]interface{}{"key": "file", "value": map[string]interface{}{
+				"path": "README.md", "content": base64.StdEncoding.EncodeToString(overview), "encoding": "base64",
+			}})
+		}
 	}
 	// Alt-Layout aufräumen: flat liegende stop_events-Parquets und manifest.json
 	// (vor der Ordner-Umstellung) aus dem Repo-Tree entfernen — IDEMPOTENT:
-	// im Tree fehlen sie in künftigen Läufen → die Liste ist leer.
-	treeURL := hfEndpoint + "/api/datasets/" + repo + "/tree/main?recursive=true"
-	treeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
-	if err != nil {
-		return err
-	}
-	treeReq.Header.Set("Authorization", "Bearer "+token)
-	treeResp, err := client.Do(treeReq)
-	if err != nil {
-		return fmt.Errorf("hf tree: %w", err)
-	}
-	treeBody, _ := io.ReadAll(io.LimitReader(treeResp.Body, 1<<20))
-	treeResp.Body.Close()
-	if treeResp.StatusCode == http.StatusOK {
-		var tree []struct {
-			Path string `json:"path"`
-			Type string `json:"type"`
+	// im Tree fehlen sie in künftigen Läufen → die Liste ist leer. Der
+	// Backfill löscht nichts im Repo — nur der Normal-Export räumt auf.
+	if opts.cleanupOldFlat {
+		treeURL := hfEndpoint + "/api/datasets/" + repo + "/tree/main?recursive=true"
+		treeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
+		if err != nil {
+			return err
 		}
-		if json.Unmarshal(treeBody, &tree) == nil {
-			for _, f := range tree {
-				if f.Type != "file" || f.Path == ".gitattributes" || f.Path == "README.md" || f.Path == "stations.parquet" {
-					continue
-				}
-				oldFlat := (strings.HasPrefix(f.Path, "stop_events_") && strings.HasSuffix(f.Path, ".parquet") && !strings.Contains(f.Path, "/")) || f.Path == "manifest.json" || (strings.Contains(f.Path, "/") && strings.HasPrefix(f.Path, "20") && strings.HasPrefix(filepath.Base(f.Path), "stop_events_") && filepath.Base(f.Path) != "stop_events.parquet" && strings.HasSuffix(f.Path, ".parquet"))
-				if oldFlat {
-					enc.Encode(map[string]interface{}{"key": "deletedFile", "value": map[string]interface{}{"path": f.Path}})
-					log.Printf("[export] hf: removing old flat file %s from repo tree", f.Path)
+		treeReq.Header.Set("Authorization", "Bearer "+token)
+		treeResp, err := client.Do(treeReq)
+		if err != nil {
+			return fmt.Errorf("hf tree: %w", err)
+		}
+		treeBody, _ := io.ReadAll(io.LimitReader(treeResp.Body, 1<<20))
+		treeResp.Body.Close()
+		if treeResp.StatusCode == http.StatusOK {
+			var tree []struct {
+				Path string `json:"path"`
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(treeBody, &tree) == nil {
+				for _, f := range tree {
+					if f.Type != "file" || f.Path == ".gitattributes" || f.Path == "README.md" || f.Path == "stations.parquet" {
+						continue
+					}
+					if isOldFlatRepoPath(f.Path) {
+						enc.Encode(map[string]interface{}{"key": "deletedFile", "value": map[string]interface{}{"path": f.Path}})
+						log.Printf("[export] hf: removing old flat file %s from repo tree", f.Path)
+					}
 				}
 			}
+		} else {
+			log.Printf("[export] WARN hf tree list: status %d (skipping cleanup)", treeResp.StatusCode)
 		}
-	} else {
-		log.Printf("[export] WARN hf tree list: status %d (skipping cleanup)", treeResp.StatusCode)
 	}
 	curl_ := hfEndpoint + "/api/datasets/" + repo + "/commit/main"
 	cr, err := http.NewRequestWithContext(ctx, http.MethodPost, curl_, &commitBody)
