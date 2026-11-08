@@ -6,8 +6,6 @@ activities/testdata/
 .git/
 bin/
 *.exe
-web/node_modules/
-web/dist/
 .env
 scripts/
 VERSION

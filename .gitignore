@@ -4,8 +4,6 @@
 # Build artifacts
 *.exe
 bin/
-web/node_modules/
-web/dist/
 
 # Private / non-public
 AGENTS.md

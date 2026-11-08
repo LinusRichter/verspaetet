@@ -1,9 +1,8 @@
 package main
 
-// API server: serves the data-UI endpoints (dataui.go), the ops health
-// endpoint used by monitoring, Prometheus metrics, and the React static
-// build. The v1 endpoints (stations/lines/events/routes/trips/delays/stats)
-// were removed together with the v1 frontend.
+// API server: the ops health endpoint used by monitoring and Prometheus
+// metrics. It serves no dataset queries: the data UI works on the published
+// monthly exports, never on the collector's database.
 
 import (
 	"context"
@@ -43,20 +42,10 @@ func main() {
 	defer pool.Close()
 
 	mux := http.NewServeMux()
-
-	// Data-UI v2 (read-only): /api/meta /api/search /api/board /api/journey
-	// /api/line /api/day
-	registerDataUI(mux, pool)
-
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		handleHealth(w, r, pool)
 	})
 	mux.Handle("GET /metrics", metrics.Handler())
-
-	// Serve React static files if web/dist exists.
-	if _, err := os.Stat("web/dist"); err == nil {
-		mux.Handle("/", http.FileServer(http.Dir("web/dist")))
-	}
 
 	port := os.Getenv("API_PORT")
 	if port == "" {
