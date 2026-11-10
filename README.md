@@ -22,7 +22,7 @@ Monthly Parquet chunks of delay-evolution snapshots for all German IRIS stations
 - **Snapshots are change-only:** a new row is written only when actual time, platform, destination, route or cancellation changed. `scrape_runs.parquet` (from schema v0.3) is the fetch log: one row per successful board fetch per station and direction, so "unchanged" can be told apart from "not observed".
 - **Format:** Parquet (zstd). On HuggingFace: one folder per operating month at `<YYYY-MM>/` containing `stop_events.parquet`, `scrape_runs.parquet`, `manifest.json` (SHA256, coverage, schema version) and a per-month `README.md` dataset card. `stations.parquet` (full registry, refreshed each export) and the root `README.md` (index of all chunks, column schema) sit at the repo root and are regenerated on each export. Local copies live under `/exports/<YYYY-MM>/`, with the stop events named `stop_events_<YYYY-MM>.parquet`.
 - **License:** CC BY 4.0 (attribution required, see below).
-- **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet). One chunk per operating month, published on the 4th of the following month (3-day finality lag). First chunk: 2026-09.
+- **Where:** [huggingface.co/datasets/LinusRichter404/verspaetet](https://huggingface.co/datasets/LinusRichter404/verspaetet). One chunk per operating month, published from the 4th of the following month (3-day finality lag); a failed export is retried daily. First chunk: 2026-09.
 
 > **Status:** Experimental. The code was written largely with AI coding agents. Collection has been running since 2026-09-21.
 >
@@ -45,6 +45,8 @@ docker compose up -d
 
 Ops dashboard (Grafana): `http://localhost:8082`. The API on `:8080` only serves `/api/health` and `/metrics`.
 
+Optional settings in `.env` (defaults in brackets): `CADENCE_MINUTES` [40], `IRIS_RATE_LIMIT` [60 req/min], `HF_TOKEN`/`HF_REPO` (upload to HuggingFace; without them chunks stay in `/exports`), `EXPORT_TIMEOUT` [12h, one export attempt including the upload], `EXPORT_MIN_FREE_GB` [25, an export does not start with less free disk].
+
 ## Architecture
 
 ```
@@ -59,16 +61,29 @@ scheduler ──minute tick──▶ asynq (Redis) ──▶ worker ──▶ IR
 API (:8080): /api/health + /metrics ──▶ VictoriaMetrics ──▶ Grafana (:8082)
 ```
 
+## Data lifecycle
+
+Postgres only holds recent data. Each operating month goes through four steps, tracked per month in the `export_runs` table:
+
+1. **Export:** from the 4th of the following month, 04:00 UTC, the scheduler enqueues the export. It checks every hour, so a restart cannot skip a month, and retries a failed export once a day. Files go to `/exports/<YYYY-MM>/`.
+2. **Upload:** with `HF_TOKEN`/`HF_REPO` set, the chunk is uploaded to HuggingFace and verified against the repo (file checksums and the published manifest).
+3. **Off-site backup:** your own backup job copies the chunk and a database dump somewhere safe and records it with `seeder --mark-offsite YYYY-MM`.
+4. **Prune:** `seeder --prune-month YYYY-MM` deletes the month's `stop_events` and the already published fetch-log rows. It refuses unless the month is uploaded and re-verified on HuggingFace, marked off-site, and the number of rows in Postgres equals the exported chunk exactly. `--dry-run` shows what it would delete.
+
+The seeder runs inside the worker container, e.g. `docker compose exec worker /app/bin/seeder --status`. Months exported before `export_runs` existed are registered with `--adopt-month YYYY-MM`. Without HuggingFace credentials or an off-site mark nothing is ever deleted.
+
 ## Data model
 
 ```
-stations        EVA-keyed station registry (StaDa: name, category, lat/lon)
+stations        EVA-keyed station registry (StaDa: name, category, lat/lon;
+                no_iris = skipped, has_data = delivered events at least once)
 scrape_runs     fetch log: one row per successful (station, direction, scrape)
 stop_events     the dataset: change-only snapshots per (station, stop_id):
                 planned/actual time, platform (planned/actual), route path,
                 cancellation, train category/number/operator; multiple rows
                 per stop = delay evolution
 pending_stations discovery: unresolved route-path names
+export_runs     per-month state: exported, uploaded, off-site, pruned
 ```
 
 Views: `delays` (NULL-preserving delay_seconds), `platform_changes`.
