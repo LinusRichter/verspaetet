@@ -1,0 +1,1 @@
+ALTER TABLE stations DROP COLUMN IF EXISTS has_data;

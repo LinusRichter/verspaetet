@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"time"
 
+	"verspaetet/activities"
 	asynqtasks "verspaetet/asynqtasks"
 	"verspaetet/metrics"
 
@@ -22,7 +21,12 @@ import (
 // fetch_offset matches the current slot in the cycle. Newly imported
 // stations are picked up automatically — no restart needed.
 //
-// CADENCE_MINUTES (default 30) MUST match the value stationimport used to
+// It also drives the monthly export pipeline: every hour it checks which of
+// the previous two months still needs an export (export_runs state), so a
+// failed export is retried instead of rotting in the asynq archive. And on
+// day 2 of each month at 03:00 UTC it re-probes all no_iris stations.
+//
+// CADENCE_MINUTES (default 40) MUST match the value stationimport used to
 // compute fetch_offset. Changing the cadence = re-run stationimport with the
 // new value + restart the scheduler with the same env.
 func main() {
@@ -31,7 +35,7 @@ func main() {
 	if dsn == "" {
 		log.Fatalln("POSTGRES_DSN is not set")
 	}
-	cadence := envInt("CADENCE_MINUTES", 30)
+	cadence := envInt("CADENCE_MINUTES", 40)
 	dryRun := os.Getenv("DRY_RUN") == "1"
 	if dryRun {
 		log.Printf("scheduler starting in DRY_RUN mode (no enqueues), cadence=%dm", cadence)
@@ -46,6 +50,8 @@ func main() {
 
 	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
 	defer client.Close()
+	ins := asynq.NewInspector(asynq.RedisClientOpt{Addr: redisAddr})
+	defer ins.Close()
 
 	metrics.Listen(envOr("METRICS_ADDR", ":9091"))
 
@@ -57,10 +63,22 @@ func main() {
 	// slots on the next tick instead of losing coverage permanently.
 	lastSlot := int(time.Now().Unix()/60) % cadence
 	tick(ctx, pool, client, cadence, dryRun, lastSlot)
+	var lastExportCheck time.Time // zero: first tick checks immediately
+	var lastRecheckMonth string
 	for {
 		select {
 		case <-ticker.C:
-			cur := int(time.Now().Unix()/60) % cadence
+			now := time.Now().UTC()
+			// Monthly export check — BEFORE the missed==0 continue below, so
+			// it runs on every loop iteration, hourly.
+			if time.Since(lastExportCheck) >= time.Hour {
+				lastExportCheck = now
+				checkExports(ctx, pool, client, ins, now)
+			}
+			// Monthly no_iris re-probe (day 2, 03:00 UTC, once per month).
+			recheckDisabledStations(ctx, pool, client, now, &lastRecheckMonth)
+
+			cur := int(now.Unix()/60) % cadence
 			missed := (cur - lastSlot + cadence) % cadence
 			if missed == 0 {
 				// Ticker fired within the same slot (tick ran < 60s ago):
@@ -78,44 +96,90 @@ func main() {
 			}
 			tick(ctx, pool, client, cadence, dryRun, slots...)
 			lastSlot = cur
-			// Monthly dataset export: on the 4th of each month at 04:00 UTC
-			// export the PREVIOUS operating month (+3 days finality lag).
-			now := time.Now().UTC()
-			if now.Day() == 4 && now.Hour() == 4 && now.Minute() == 0 {
-				enqueueMonthExport(ctx, client, now.AddDate(0, -1, 0))
-			}
 		}
 	}
 }
 
-// enqueueMonthExport enqueues the export task for the month of t.
-// Guarded: the minute-tick fires exactly once per minute, and the day/hour/
-// minute condition only matches once a month.
-func enqueueMonthExport(ctx context.Context, client *asynq.Client, forMonth time.Time) {
+// checkExports enqueues export tasks for every due month that is not
+// finished yet (export_runs state). Hourly; errors are logged, never fatal.
+// Archived exports are replaced once per day (04:00 UTC hour) — the retry
+// path for a month whose last attempts all failed.
+func checkExports(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, ins *asynq.Inspector, now time.Time) {
 	if dryRun() {
 		return
 	}
-	y, m := forMonth.Year(), int(forMonth.Month())
-	payload, err := json.Marshal(asynqtasks.ExportMonthPayload{Year: y, Month: m})
+	// Same rule as the worker: only with both set does an export end in an upload.
+	hfEnabled := os.Getenv("HF_TOKEN") != "" && os.Getenv("HF_REPO") != ""
+	months, err := activities.MonthsNeedingExport(ctx, pool, now, hfEnabled)
 	if err != nil {
-		log.Printf("WARN export marshal: %v", err)
+		log.Printf("WARN export check: %v", err)
 		return
 	}
-	_, err = client.EnqueueContext(ctx,
-		asynq.NewTask(asynqtasks.TypeExportMonth, payload),
-		asynq.Queue(asynqtasks.QueueExport),
-		asynq.MaxRetry(5),
-		asynq.Timeout(asynqtasks.ExportTimeout),
-		asynq.TaskID(fmt.Sprintf("export:%04d%02d", y, m)), // dedup: once per month, ever
-	)
-	switch {
-	case err == nil:
-		log.Printf("enqueued export for %04d-%02d", y, m)
-	case errors.Is(err, asynq.ErrDuplicateTask) || errors.Is(err, asynq.ErrTaskIDConflict):
-		log.Printf("export for %04d-%02d already enqueued/done", y, m)
-	default:
-		log.Printf("WARN enqueue export %04d-%02d: %v", y, m, err)
+	for _, ym := range months {
+		start, err := activities.ParseMonth(ym)
+		if err != nil {
+			log.Printf("WARN export check %s: %v", ym, err)
+			continue
+		}
+		state, err := asynqtasks.EnqueueMonthExport(ctx, client, ins, start.Year(), int(start.Month()), now.Hour() == 4)
+		if err != nil {
+			log.Printf("WARN enqueue export %s: %v", ym, err)
+			continue
+		}
+		log.Printf("export %s: %s", ym, state)
 	}
+}
+
+// recheckDisabledStations enqueues a recheck board:fetch for every no_iris
+// station on day 2 of the month, hour 3 UTC — once per process per month.
+// A station that delivers data again is re-enabled by the worker.
+func recheckDisabledStations(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, now time.Time, lastMonth *string) {
+	if now.Day() != 2 || now.Hour() != 3 {
+		return
+	}
+	ym := now.Format("2006-01")
+	if *lastMonth == ym {
+		return
+	}
+	*lastMonth = ym
+	if dryRun() {
+		log.Printf("DRY-RUN recheck of disabled stations skipped")
+		return
+	}
+	rows, err := pool.Query(ctx, "SELECT eva FROM stations WHERE no_iris")
+	if err != nil {
+		log.Printf("WARN recheck query: %v", err)
+		return
+	}
+	var evas []string
+	for rows.Next() {
+		var eva string
+		if err := rows.Scan(&eva); err == nil {
+			evas = append(evas, eva)
+		}
+	}
+	rows.Close()
+	enqueued := 0
+	for _, eva := range evas {
+		payload, err := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva, EnqueuedAt: now.Unix(), Recheck: true})
+		if err != nil {
+			continue
+		}
+		ectx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err = client.EnqueueContext(ectx,
+			asynq.NewTask(asynqtasks.TypeBoardFetch, payload),
+			asynq.Queue(asynqtasks.QueueDefault),
+			asynq.MaxRetry(0),
+			asynq.Timeout(2*time.Minute),
+		)
+		cancel()
+		if err != nil {
+			log.Printf("WARN enqueue recheck %s: %v", eva, err)
+			continue
+		}
+		enqueued++
+	}
+	log.Printf("recheck: enqueued board:fetch for %d disabled stations", enqueued)
 }
 
 func dryRun() bool { return os.Getenv("DRY_RUN") == "1" }
@@ -154,7 +218,7 @@ func runTick(ctx context.Context, pool *pgxpool.Pool, client *asynq.Client, slot
 
 	enqueued := 0
 	for _, eva := range evas {
-		payload, err := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva})
+		payload, err := json.Marshal(asynqtasks.BoardFetchPayload{Eva: eva, EnqueuedAt: time.Now().Unix()})
 		if err != nil {
 			continue
 		}

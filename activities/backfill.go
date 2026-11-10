@@ -118,9 +118,9 @@ func BackfillScrapeRuns(ctx context.Context, pool *pgxpool.Pool, exportsDir stri
 	return old, nil
 }
 
-// downloadPublishedManifest fetches the manifest of a published chunk from
+// DownloadPublishedManifest fetches the manifest of a published chunk from
 // the HF dataset repo (resolve endpoint, Bearer token if HF_TOKEN is set).
-func downloadPublishedManifest(ctx context.Context, ym string) (*Manifest, error) {
+func DownloadPublishedManifest(ctx context.Context, ym string) (*Manifest, error) {
 	repo := os.Getenv("HF_REPO")
 	if repo == "" {
 		return nil, fmt.Errorf("HF_REPO not set")
@@ -151,6 +151,16 @@ func downloadPublishedManifest(ctx context.Context, ym string) (*Manifest, error
 		return nil, fmt.Errorf("manifest %s decode: %w: %s", ym, err, bytes.TrimSpace(body))
 	}
 	return &m, nil
+}
+
+// downloadPublishedManifest is DownloadPublishedManifest with backfill's
+// error prefix.
+func downloadPublishedManifest(ctx context.Context, ym string) (*Manifest, error) {
+	m, err := DownloadPublishedManifest(ctx, ym)
+	if err != nil {
+		return nil, fmt.Errorf("backfill %s: %w", ym, err)
+	}
+	return m, nil
 }
 
 // prepareBackfillManifest validates a published manifest for a scrape_runs

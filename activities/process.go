@@ -237,6 +237,7 @@ INSERT INTO stop_events (
 //   - via_path: fill empty (the planned route; communicated changes never
 //     overwritten)
 //   - direction_name: fill empty (planned distant endpoint)
+//
 // Idempotent: rows already matching are not touched.
 func (a *Process) BackfillPlanned(ctx context.Context, eva string, baseline []shared.PlanBaselineRow) (int64, error) {
 	if a.Pool == nil || len(baseline) == 0 {

@@ -844,7 +844,8 @@ type hfUploadOpts struct {
 }
 
 // hfEndpoint is the HuggingFace Hub base URL (upload + manifest download).
-const hfEndpoint = "https://huggingface.co"
+// Package var: tests point it at a local httptest server.
+var hfEndpoint = "https://huggingface.co"
 
 func uploadToHuggingFace(ctx context.Context, chunkDir string, opts hfUploadOpts) error {
 	token := os.Getenv("HF_TOKEN")

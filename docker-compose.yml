@@ -129,6 +129,9 @@ services:
       - DOWNTIMES_DIR=/downtimes
       - ASYNQ_CONCURRENCY=10
       - EXPORTS_DIR=/exports
+      - CADENCE_MINUTES=${CADENCE_MINUTES:-40}
+      - EXPORT_TIMEOUT=${EXPORT_TIMEOUT:-12h}
+      - EXPORT_MIN_FREE_GB=${EXPORT_MIN_FREE_GB:-25}
       - METRICS_ADDR=:9091
     volumes:
       - verspaetet_exports:/exports
@@ -159,6 +162,9 @@ services:
       - REDIS_ADDR=redis:6379
       - POSTGRES_DSN=postgres://bahnhof:${POSTGRES_PASSWORD}@postgres:5432/bahnhof?sslmode=disable
       - CADENCE_MINUTES=${CADENCE_MINUTES:-40}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_REPO=${HF_REPO:-}
+      - EXPORT_TIMEOUT=${EXPORT_TIMEOUT:-12h}
       - METRICS_ADDR=:9091
     depends_on:
       redis:
