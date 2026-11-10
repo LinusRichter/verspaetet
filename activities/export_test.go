@@ -1,6 +1,8 @@
 package activities
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,5 +145,27 @@ func TestWriteDatasetCardOldManifest(t *testing.T) {
 	}
 	if !strings.Contains(s, "has no fetch log") {
 		t.Error("old manifest card must say that unchanged and not observed cannot be told apart")
+	}
+}
+
+// An empty re-export (month already pruned locally) must leave the local
+// copy of the published chunk untouched.
+func TestExportMonthEmptyKeepsExistingFile(t *testing.T) {
+	pool := testDB(t)
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "stop_events_2026-10.parquet")
+	if err := os.WriteFile(existing, []byte("published chunk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ExportMonth(context.Background(), pool, dir, 2026, 10, "v0.3")
+	if !errors.Is(err, ErrEmptyMonth) {
+		t.Fatalf("err = %v, want ErrEmptyMonth", err)
+	}
+	got, err := os.ReadFile(existing)
+	if err != nil || string(got) != "published chunk" {
+		t.Fatalf("existing file changed: %q, %v", got, err)
+	}
+	if _, err := os.Stat(existing + ".new"); !os.IsNotExist(err) {
+		t.Fatalf("side file left behind: %v", err)
 	}
 }

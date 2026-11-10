@@ -298,6 +298,18 @@ func makeExportMonthHandler(pool *pgxpool.Pool) func(context.Context, *asynq.Tas
 				return nil
 			}
 		}
+		// A month that is already published but has no state row was exported
+		// before export_runs existed: re-exporting it would rebuild the local
+		// files from whatever rows are left. It has to be adopted instead.
+		if hfEnabled && (run == nil || run.ExportedAt == nil) {
+			if _, perr := activities.DownloadPublishedManifest(ctx, chunkName); perr == nil {
+				result = "skipped_published"
+				log.Printf("WARN export %s: already published on HuggingFace but not in export_runs — not exporting; run seeder --adopt-month %s", chunkName, chunkName)
+				return fmt.Errorf("export %s: published but not adopted: %w", chunkName, asynq.SkipRetry)
+			} else if !strings.Contains(perr.Error(), "status 404") {
+				return fail(fmt.Errorf("export %s: check published manifest: %w", chunkName, perr))
+			}
+		}
 		if err := activities.MarkExportAttempt(ctx, pool, chunkName); err != nil {
 			log.Printf("WARN mark export attempt %s: %v", chunkName, err)
 		}

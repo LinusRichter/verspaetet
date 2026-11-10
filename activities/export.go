@@ -126,8 +126,13 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	manifestFile := filepath.Join(outDir, "manifest.json")
 
 	// ---- stop_events: stream rows into Parquet ----
-	rowsWritten, minScraped, maxScraped, err := exportStopEvents(ctx, pool, eventsFile, monthStart, monthEnd)
+	// Written next to the existing file and only moved into place once the
+	// month turned out non-empty: a re-export of an already pruned month
+	// must not destroy the local copy of the published chunk.
+	newEventsFile := eventsFile + ".new"
+	rowsWritten, minScraped, maxScraped, err := exportStopEvents(ctx, pool, newEventsFile, monthStart, monthEnd)
 	if err != nil {
+		os.Remove(newEventsFile)
 		return nil, fmt.Errorf("export stop_events: %w", err)
 	}
 
@@ -136,10 +141,13 @@ func ExportMonth(ctx context.Context, pool *pgxpool.Pool, outDir string, year, m
 	// publish an empty chunk over the real one — refuse before anything
 	// else is written or uploaded (no stations, no manifest, no README).
 	if rowsWritten == 0 {
-		if err := os.Remove(eventsFile); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(newEventsFile); err != nil && !os.IsNotExist(err) {
 			log.Printf("WARN remove empty events file: %v", err)
 		}
 		return nil, fmt.Errorf("export %04d-%02d: %w", year, month, ErrEmptyMonth)
+	}
+	if err := os.Rename(newEventsFile, eventsFile); err != nil {
+		return nil, fmt.Errorf("export stop_events: %w", err)
 	}
 
 	// ---- stations: full registry (small, refreshed each chunk) ----
