@@ -1,5 +1,7 @@
 # verspaetet
 
+![healthchecks.io](https://healthchecks.io/badge/f2ab033f-ca1d-4b4c-9673-7d3557/BHBdkClW-2.svg)
+
 Experimental project to aggregate a dataset of Deutsche Bahn delays at train stations.
 
 verspaetet (German for "delayed") collects departure and arrival board data for all ~5,400 German IRIS stations via the official DB Timetables API, stores every change of a train's forecast in Postgres, and publishes the result as a monthly delay-evolution dataset on HuggingFace.
